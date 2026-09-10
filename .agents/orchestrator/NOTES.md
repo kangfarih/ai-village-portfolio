@@ -1412,3 +1412,150 @@ is not changed here.
 - **Regex is intentionally strict** (`^issue/[0-9]+$`, no leading zeros
   restriction): `issue/0` and `issue/007` would pass; harmless for head naming.
 
+---
+
+# Phase 5a — non-development goals become linked GitHub tickets (`dev` only — NEVER main)
+
+Non-development goals (`docs`/`analysis`/`requirement`/`user-story`) no longer
+become `ai-goal` sub-issues that travel the branch/TL/Programmer/PR loop. The
+orchestrator now turns each one into a **linked ticket** (`ai-ticket` + a
+`kind/*` label) whose deliverable is the requirement/user-story/analysis itself;
+code goals are unchanged. A docs-only parent gets no integration branch and no
+PR — the orchestrator marks it complete itself. `.github/scripts/llm_json.sh`
+is unchanged and no role inlines `curl`.
+
+## What changed (ONLY these 5 files)
+
+- `.github/workflows/agent-orchestrate.yml`
+  - **LLM schema untouched**: `{title, detail, kind}` and the `kind` enum
+    (`code|docs|analysis|requirement|user-story`) are exactly as before. The
+    system prompt now states that for non-code kinds `detail` is the **full
+    markdown body** of the deliverable (e.g. Problem / User Story / Acceptance
+    Criteria for requirement/user-story; findings + recommendation for analysis).
+  - **Kind-aware branch step**: `CODE_COUNT` is computed over the (≤6) goals and
+    the `issue/<parent#>` integration branch is created **only when
+    `CODE_COUNT > 0`**; with zero code goals the step is skipped and logged.
+    The per-element `jq -e` contract guard now runs **before** branch creation.
+  - **Kind-aware goal loop**: `kind: code` goals keep today's behavior exactly
+    (`[GOAL] <title> (from #N)`, `ai-goal` + `goal/tl`, exact-title dedupe, body
+    with `Kind:`/`Parent:`/`Integration branch:`). Non-code goals create a ticket
+    titled `[<Kind Title Case>] <title>` (`user-story` → `User Story`) with
+    labels `kind/<kind>` + `ai-ticket` (no `ai-goal`/`goal/tl`) and a body
+    `<!-- agent-ticket:v1 origin:#N -->` / `## <Kind>` / `detail` / `Origin: #N`.
+    Created via `gh issue create` (stdout URL; no `--json`/`--jq`), quoted args.
+  - **Ticket idempotency**: `gh issue list --label ai-ticket --state all --limit
+    200 --json title,body` is filtered locally; a ticket is skipped only when an
+    issue with the exact title has a body containing `Origin: #N`. Code goals
+    keep the exact-title suffix dedupe.
+  - **Summary + docs-only completion**: the `<!-- orchestrator:v1 -->` comment
+    lists code goals and tickets separately; when `CODE_COUNT == 0` it also posts
+    `<!-- parent-done:v1 -->` and adds `status:done` (idempotent marker read;
+    `--add-label` is itself idempotent). `triage/accepted` is still added last.
+  - **Dispatch**: `agent-techlead` is dispatched only for code goals — the
+    dispatch query is scoped to `ai-goal` issues still at `goal/tl`, which tickets
+    never carry.
+  - **Self-heal labels**: the Ensure step now also creates `ai-ticket`,
+    `kind/feature`, `kind/bug`, `kind/requirement`, `kind/user-story`,
+    `kind/analysis`, `kind/docs` (existing labels kept).
+  - Unchanged: `ERR` trap (`v1-error`), `contents: write`/`issues: write`/
+    `actions: write`, and no push to `dev`/`main` (the only push is
+    `issue/<N>`).
+- `.github/workflows/agent-programmer.yml`
+  - **Non-dev path retired**: the `NONDEV` branch, the non-dev system prompt and
+    the collapse to `.agents/issue-<parent#>/goal-<goal#>.md` are removed.
+  - **Defensive guard**: if the parsed `tl:v1` `kind != "code"`, it posts a loud
+    comment, moves the goal to `needs-human` (removing `goal/building`) and exits
+    1 — without creating a branch. Changeset schema, path allowlist, bounded
+    integration retry, guards, `result:v1`, and dispatch are unchanged.
+- `.github/labels.yml` — appended `ai-ticket`, `kind/feature`, `kind/bug`,
+  `kind/requirement`, `kind/user-story`, `kind/analysis`, `kind/docs` (reference
+  only; `kind/task` stays).
+- `.agents/orchestrator/STATE-MACHINE.md` — §9 `issue/<parent#>` creation is
+  now conditional on ≥1 code goal; the non-dev markdown-artifact path is removed
+  and replaced by a pointer to the new **§11 Non-development flow** (ticket
+  title/labels/body/marker, ticket idempotency, docs-only `status:done`,
+  code-only dispatch, the Programmer guard). §1/§2/§10 wording aligned.
+- `.agents/orchestrator/NOTES.md` (this section).
+
+## Verification (actual output)
+
+- `ruby -ryaml -e "YAML.load_file(...)"` → `YAML OK` for
+  `agent-orchestrate.yml`, `agent-programmer.yml`, `labels.yml`.
+- Extracted all 11 `run:` blocks (Ruby YAML) and `bash -n` each →
+  `bash -n OK` for all 11. (`shellcheck` not installed on the host.)
+- Structural assertions:
+  - branch creation guarded by `CODE_COUNT` (`CODE_COUNT=0` ⇒ skip); the
+    per-element contract guard runs before it;
+  - `gh issue create` has **no** `--json`; code goal create uses
+    `ai-goal`+`goal/tl`, ticket create uses `kind/${KIND}`+`ai-ticket`;
+  - dispatch query is `gh issue list --label ai-goal ...` + `goal/tl`, so
+    tickets are never dispatched;
+  - the only `git push` in the orchestrator is
+    `git push -u origin "issue/${ISSUE_NUMBER}"`; programmer pushes are
+    `${TASK}`/`${INTEGRATION}` (plus the mandated task delete) — **zero**
+    `dev`/`main` push targets and zero `--force`;
+  - `NONDEV`, `.agents/issue-<parent#>/goal-<goal#>.md` and the non-dev system
+    prompt are gone from the Programmer; the `kind != "code"` guard is present;
+  - all 7 new labels exist in both the self-heal step and `labels.yml`.
+- **Mock `gh` + mock `git` + extracted orchestrator run blocks — 43/43
+  assertions pass:**
+  - (a) all-non-dev goals → 0 branches, 3 tickets with correct titles/labels
+    (`ai-ticket` + `kind/*`, no `ai-goal`), `Origin: #55` bodies,
+    `<!-- parent-done:v1 -->` + `status:done` + `triage/accepted`, 0 dispatches;
+  - (b) mixed → exactly 1 branch `issue/55`, 1 code goal (with
+    `Integration branch: issue/55`) + 2 tickets, no parent-done, dispatch step
+    runs `agent-techlead.yml` once with `issue_number=1`;
+  - (c) re-run with the goal progressed past `goal/tl` → no duplicate
+    goals/tickets, no duplicate branch, no duplicate dispatch, single summary
+    comment;
+  - (d) `gh issue create` failure on a ticket → `<!-- orchestrator:v1-error -->`
+    comment + non-zero exit, no branch, no parent-done.
+- **Mock `gh` + extracted Programmer run block — 10/10 assertions pass:**
+  `kind: docs` → loud "non-development / should not reach the Programmer"
+  comment, `goal/building` removed + `needs-human` added, no `goal/review`, **no
+  git command**; `kind: code` passes the guard and reaches the missing-key
+  branch (proving the guard is code-only).
+- `git status --short` shows exactly the 5 intended files.
+
+## Commit + push record (dev only — NEVER main)
+
+- Message: `feat(agents): non-dev goals become linked ai-ticket issues instead of branches (Phase 5a)`.
+- Files in this commit (ONLY these 5):
+  - `.github/workflows/agent-orchestrate.yml`
+  - `.github/workflows/agent-programmer.yml`
+  - `.github/labels.yml`
+  - `.agents/orchestrator/STATE-MACHINE.md` (§9 updated, §11 appended)
+  - `.agents/orchestrator/NOTES.md` (this section)
+- Push: `git push origin dev` (no `-i`, no `--force`, no `--no-verify`).
+- Commit SHA + push result: `<recorded post-push>` — `git push origin dev` OK.
+  This notes-record entry is a second, notes-only commit recording the SHA
+  (its own SHA is recorded post-push, not invented here).
+
+## Open risks / follow-ups
+
+- **Live runner unverified.** YAML parse + `bash -n` + structural checks + the
+  mocked orchestrator/programmer flows prove syntax and control flow only. The
+  real Actions runner, the OpenRouter path, and real `gh issue
+  create`/`list`/`comment` behaviour have not run. First live trial = a parent
+  labeled `ai-orchestrate` with a valid `OPENCODE_API_KEY` and at least one
+  non-code goal, then confirm the linked `ai-ticket` issues and (mixed) one
+  `ai-goal`.
+- **Ticket dedupe keys on the exact generated title.** A human who edits a
+  ticket title would defeat the dedupe and a re-run could create a duplicate;
+  the `Origin: #N` body marker still prevents cross-parent collisions. Acceptable
+  for v1.
+- **`kind/feature`/`kind/bug` labels are not produced by the goal LLM** (its
+  `kind` enum has no feature/bug); they exist for triage/humans and future
+  kinds. Only `kind/requirement|user-story|analysis|docs` are emitted here.
+- **`gh issue list --limit 200`** is the same bounded lookup the code-goal dedupe
+  already uses; a repo with >200 tickets of one label could miss a match and
+  duplicate on re-run. The orchestrator concurrency group serializes runs.
+- **Docs-only parent completion is orchestrator-owned**, not review-owned. If a
+  docs-only parent already carries `status:done` from elsewhere, the marker
+  comment is still posted once; both operations are idempotent.
+- **Existing non-dev goals created before Phase 5a** (already `ai-goal` +
+  `goal/tl` with `Kind: docs`) still reach the Programmer and now hit the
+  defensive guard → `needs-human`. They are not migrated to tickets
+  automatically; a human closes/re-labels them.
+
+

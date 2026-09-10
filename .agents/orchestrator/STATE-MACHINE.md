@@ -16,7 +16,7 @@
 |---|---|---|---|---|
 | **PO** | `agent-orchestrate`, `agent-review` | `ai-orchestrate`; PO verdict pass on `goal/review` | **high** | `thinkingmachines/inkling:free` |
 | **TL** | `agent-techlead` | `goal/tl` | **medium** | `thinkingmachines/inkling:free` |
-| **Programmer** | `agent-programmer` | `goal/ready` | **medium** for `kind: code`, **low** for non-development kinds (`docs`/`analysis`/`requirement`/`user-story`) | `thinkingmachines/inkling:free` |
+| **Programmer** | `agent-programmer` | `goal/ready` | **medium** (`kind: code` only; non-dev goals never reach the Programmer — see §11) | `thinkingmachines/inkling:free` |
 
 Rules:
 
@@ -80,7 +80,8 @@ The orchestrator creates sub-issues titled `[GOAL] <title> (from #<parent>)`:
 - **Kind:** each goal carries a `kind` in its body (`Kind: <kind>`) and in the
   `tl:v1` spec, one of `code | docs | analysis | requirement | user-story`.
   `code` changes repository source/config/files; every other kind is
-  **non-development** and produces a markdown artifact (§9).
+  **non-development**: the orchestrator turns it into a linked `ai-ticket`
+  issue instead of a goal (§11), and it never reaches the Programmer.
 - **Cap 6 goals** per parent (the LLM is asked for 3–6; the loop slices `[:6]`).
 - **Per-title dedupe:** before creating, the PO lists existing `ai-goal` issues
   whose title contains `from #<parent>` and skips any whose expected title is
@@ -357,12 +358,16 @@ workflow manually with `issue_number`.
 
 All automated work happens on branches. **Agents never push `dev` or `main`,
 never force-push, and never merge to `dev`/`main`.** A human merges the final
-integration PR.
+integration PR. (Non-development goals never touch branches: the orchestrator
+turns them into linked tickets instead — see §11.)
 
 ### `issue/<parent#>` — integration branch
 
 - Cut from a **fresh `origin/dev`** by the PO (`agent-orchestrate`), once per
-  parent issue, before any goal is created.
+  parent issue, before any goal is created — and **only when at least one goal
+  has `kind: code`**. A parent with zero code goals (docs-only) gets no
+  integration branch, no task branches and no PR; the orchestrator marks it
+  complete itself (§11).
 - The Programmer treats existence as a fallback: it runs
   `git fetch --no-tags origin dev` and, if
   `git ls-remote --exit-code --heads origin "refs/heads/issue/<parent#>"`
@@ -404,7 +409,7 @@ fetch origin <INTEGRATION>
 - Cut by the **Programmer** from the goal's integration branch
   `issue/<parent#>` when the goal is `goal/ready`.
 - The Programmer writes the changeset's real files, commits them
-  (`feat(goal-#N)` for `kind: code`, else `docs(goal-#N)`), pushes
+  (`feat(goal-#N)`), pushes
   `task/<goal#>`, then auto-merges it into `issue/<parent#>` with
   `git merge --no-ff` and pushes the integration branch (bounded retry on a
   concurrent sibling push — see *Integration update retry*). The goal's merge
@@ -453,16 +458,13 @@ otherwise the goal moves to `goal/review`.
 
 ### Non-development goals
 
-Goals whose `kind` is `docs`, `analysis`, `requirement`, or `user-story` are
-non-development. The Programmer ignores the model's path and collapses the
-changeset to exactly one markdown artifact committed to
-
-```
-.agents/issue-<parent#>/goal-<goal#>.md
-```
-
-on the integration branch `issue/<parent#>`. `kind: code` is the only kind that
-alters repository source/config/files.
+Non-development goals (`kind` `docs`, `analysis`, `requirement`, `user-story`)
+**never reach the Programmer and never create a branch or a committed artifact**.
+The orchestrator turns each one into a linked `ai-ticket` issue at creation time
+(§11); `kind: code` is the only kind that alters repository
+source/config/files. Defensively, if a non-code `tl:v1` payload still reaches
+the Programmer, it posts a loud comment + `needs-human` and exits non-zero
+without creating a branch.
 
 ### Final integration PR
 
@@ -540,13 +542,88 @@ Hard rules:
   contents), `issues: write` (labels/comments) and `actions: write`
   (`workflow_dispatch` chaining, §8). It explicitly does **not** add
   `contents: write`.
-- **Non-development artifacts are not lost.** Goals of `kind` `docs`,
-  `analysis`, `requirement`, or `user-story` commit their markdown artifacts
-  (`.agents/issue-<parent#>/goal-<goal#>.md`, §9) to the same integration
-  branch, so a parent whose goals are all non-development still produces a
-  non-empty `issue/<parent#>` → `dev` PR carrying those markdown files.
+- **Non-development deliverables are tickets, not PR artifacts.** Goals of
+  `kind` `docs`, `analysis`, `requirement`, or `user-story` never become goals,
+  never reach the Programmer, and never commit to the integration branch; the
+  orchestrator creates linked `ai-ticket` issues for them (§11). A parent whose
+  goals are all non-development therefore has no branch and no PR, and is marked
+  `status:done` by the orchestrator itself.
 - **Result contract.** The review accepts the Phase 4b-1 `result:v1` shape
   (paths-only `files`, `commit`, `merge_commit`, `task_branch`,
   `integration_branch`, `needs_human`, `needs_human_reason`, `attempt`). A
   missing/invalid payload or `needs_human:true` escalates to `needs-human`
   without an LLM call.
+
+---
+
+## 11. Non-development flow (Phase 5a)
+
+A goal whose `kind` is **not** `code` (`docs`, `analysis`, `requirement`,
+`user-story`) is a **non-development goal**. Its deliverable is the requirement,
+user story, analysis, or documentation itself — **not** a repository change.
+Non-development goals become **linked GitHub tickets**, not `ai-goal`
+sub-issues, and never enter the branch/PR loop.
+
+### Orchestrator classification
+
+- The orchestrator keeps the LLM goal schema `{title, detail, kind}` and the
+  `kind` enum unchanged. For non-code kinds the system prompt requires `detail`
+  to be the **full markdown body** of the deliverable, structured appropriately
+  (e.g. Problem / User Story / Acceptance Criteria for requirement/user-story;
+  findings + recommendation for analysis).
+- After validation it computes `CODE_COUNT` over the (≤6) goals. The
+  `issue/<parent#>` integration branch is created **only when `CODE_COUNT > 0`**;
+  with zero code goals the branch step is skipped and logged.
+
+### Linked ticket creation (PO)
+
+For each non-code goal the orchestrator creates a new issue:
+
+- **Title:** `[<Kind Title Case>] <goal title>` — e.g. `[Requirement] …`,
+  `[User Story] …`, `[Analysis] …`, `[Docs] …` (`user-story` → `User Story`).
+- **Labels:** `kind/<kind>` (e.g. `kind/requirement`, `kind/user-story`,
+  `kind/analysis`, `kind/docs`) **and** `ai-ticket`. It deliberately does **not**
+  apply `ai-goal` or `goal/tl`, so no TL/Programmer/Review role ever picks it up.
+- **Body:** a `<!-- agent-ticket:v1 origin:#<parent#> -->` marker, the kind
+  heading, the `detail` as the full markdown body, and an explicit origin link:
+
+  ```
+  <!-- agent-ticket:v1 origin:#<parent#> -->
+  ## <Kind Title Case>
+  <the goal's detail>
+
+  ---
+  Origin: #<parent#>
+  Generated by agent-orchestrate from issue #<parent#>.
+  ```
+
+- Created with `gh issue create` (stdout URL; `gh issue create` has no
+  `--json`/`--jq`). Title and body are passed as separate quoted arguments.
+- **Ticket idempotency:** before creating, the orchestrator lists
+  `gh issue list --label ai-ticket --state all --limit 200 --json title,body`
+  and skips a ticket whose title already exists **and** whose body contains
+  `Origin: #<parent#>` (so same-titled tickets of other parents do not block
+  creation). Code goals keep the exact-title `(from #<parent#>)` dedupe.
+
+### Parent completion
+
+- **Mixed parent:** code goals go through the normal loop (§2/§9/§10) and tickets
+  are created alongside them; the single `issue/<parent#>` → `dev` PR is opened
+  only if the integration branch is ahead of `dev`.
+- **Docs-only parent (`CODE_COUNT == 0`):** no integration branch, no task
+  branches, no PR. The orchestrator itself posts `<!-- parent-done:v1 -->` and
+  adds `status:done` (idempotent: skipped when the marker already exists;
+  `--add-label` is itself idempotent). `triage/accepted` is still added.
+
+### Dispatch
+
+`agent-techlead` is dispatched **only for code goals** — the dispatch query is
+scoped to `ai-goal` issues still at `goal/tl`. Tickets carry neither label, so a
+non-development ticket is never dispatched, reviewed, or merged.
+
+### Programmer (defensive)
+
+Non-dev goals no longer reach the Programmer. The Phase-4b-1 "collapse to
+`.agents/issue-<parent#>/goal-<goal#>.md`" path is **removed**; if a parsed
+`tl:v1` payload has `kind != "code"`, the Programmer posts a loud comment, moves
+the goal to `needs-human`, and exits non-zero without creating a branch.

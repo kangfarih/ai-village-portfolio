@@ -74,6 +74,13 @@ jobs:
           gh label create "goal/done" --color "0E8A16" --description "Goal done (terminal)" 2>/dev/null || true
           gh label create "needs-human" --color "B60205" --description "Automation blocked; human needed" 2>/dev/null || true
           gh label create "status:done" --color "0E8A16" --description "Parent issue complete" 2>/dev/null || true
+          gh label create "ai-ticket" --color "C2E0C6" --description "Non-development deliverable linked to a parent issue" 2>/dev/null || true
+          gh label create "kind/feature" --color "1D76DB" --description "Non-dev kind: feature description" 2>/dev/null || true
+          gh label create "kind/bug" --color "D73A4A" --description "Non-dev kind: bug report" 2>/dev/null || true
+          gh label create "kind/requirement" --color "5319E7" --description "Non-dev kind: requirement" 2>/dev/null || true
+          gh label create "kind/user-story" --color "5319E7" --description "Non-dev kind: user story" 2>/dev/null || true
+          gh label create "kind/analysis" --color "FBCA04" --description "Non-dev kind: analysis" 2>/dev/null || true
+          gh label create "kind/docs" --color "0075CA" --description "Non-dev kind: documentation" 2>/dev/null || true
 
       - name: Break issue into goals (LLM, loud failure)
         env:
@@ -102,7 +109,12 @@ jobs:
           "kind" must be exactly one of: code, docs, analysis, requirement, user-story.
           Use "code" only when the goal must change repository source/config/files.
           The other kinds (docs, analysis, requirement, user-story) are NON-development:
-          they produce a markdown artifact on the issue branch, with no source code changes.
+          they become linked GitHub tickets whose deliverable is the requirement,
+          user-story, analysis, or documentation itself - never repository changes.
+          For non-code kinds, "detail" must be the FULL markdown body of that
+          deliverable, structured appropriately (e.g. Problem / User Story /
+          Acceptance Criteria for requirement and user-story; findings and
+          recommendation for analysis).
           No markdown fences, no prose.
           SYSPROMPT
 
@@ -143,17 +155,6 @@ jobs:
           }
           trap on_error ERR
 
-          # Integration branch issue/<parent#> cut from fresh origin/dev. This is
-          # the FIRST action under the ERR trap: idempotent (skip when the remote
-          # branch already exists), never forced, and it NEVER pushes dev/main.
-          git fetch --no-tags origin dev
-          if git ls-remote --exit-code --heads origin "refs/heads/issue/${ISSUE_NUMBER}" >/dev/null 2>&1; then
-            echo "Integration branch issue/${ISSUE_NUMBER} already exists on origin; skipping creation."
-          else
-            git checkout -B "issue/${ISSUE_NUMBER}" "origin/dev"
-            git push -u origin "issue/${ISSUE_NUMBER}"
-          fi
-
           # Per-element contract guard: verify BEFORE creating anything. This is
           # the same contract passed to llm_json.sh --schema, re-checked here so a
           # stale/partial goals.json can never create malformed sub-issues.
@@ -165,6 +166,26 @@ jobs:
           fi
 
           COUNT="$(jq '[.[:6][]] | length' goals.json)"
+          # How many of the (<=6) goals are development goals. Only a parent with
+          # at least one code goal gets an issue/<parent#> integration branch.
+          CODE_COUNT="$(jq '[.[:6][] | select(.kind == "code")] | length' goals.json)"
+
+          # Integration branch issue/<parent#> cut from fresh origin/dev, but
+          # ONLY when at least one goal is kind: code. A docs-only parent gets no
+          # branch, no task branches and no PR - the orchestrator marks it done
+          # itself below. Idempotent (skip when the remote branch already exists),
+          # never forced, and it NEVER pushes dev/main.
+          if [ "$CODE_COUNT" -gt 0 ]; then
+            git fetch --no-tags origin dev
+            if git ls-remote --exit-code --heads origin "refs/heads/issue/${ISSUE_NUMBER}" >/dev/null 2>&1; then
+              echo "Integration branch issue/${ISSUE_NUMBER} already exists on origin; skipping creation."
+            else
+              git checkout -B "issue/${ISSUE_NUMBER}" "origin/dev"
+              git push -u origin "issue/${ISSUE_NUMBER}"
+            fi
+          else
+            echo "No kind: code goals (CODE_COUNT=0); skipping integration branch creation."
+          fi
 
           # Individual-title dedupe: fetch every [GOAL] issue already pointing at
           # this parent. A query failure is LOUD (no `|| true`), never treated as
@@ -179,27 +200,64 @@ jobs:
           EXISTING_JSON="$(printf '%s' "$EXISTING_JSON" | jq --arg suffix "(from #${ISSUE_NUMBER})" \
             '[.[] | select(.title | endswith($suffix))]')"
           EXISTING_TITLES="$(printf '%s' "$EXISTING_JSON" | jq -r '.[].title')"
+
+          # Ticket dedupe: non-development goals become `ai-ticket` issues. A
+          # ticket is considered already created when an issue with the exact
+          # title exists AND its body carries `Origin: #<parent>`; this tolerates
+          # same-titled tickets from other parents. Query failure is LOUD.
+          EXISTING_TICKETS_JSON="$(gh issue list --label ai-ticket --state all --limit 200 \
+            --json title,body)"
+
           MARKER="$(gh issue view "$ISSUE_NUMBER" --json comments \
             --jq '[.comments[].body] | join("\n") | contains("<!-- orchestrator:v1 -->")')"
 
           : > /tmp/goal_links.md
+          : > /tmp/ticket_links.md
           CREATED=0
+          TICKETS_CREATED=0
           for ((i = 0; i < COUNT; i++)); do
             TITLE="$(jq -r ".[$i].title" goals.json)"
             DETAIL="$(jq -r ".[$i].detail" goals.json)"
-            SUB_TITLE="[GOAL] ${TITLE} (from #${ISSUE_NUMBER})"
-            if grep -Fqx -- "$SUB_TITLE" <<< "$EXISTING_TITLES"; then
-              URL="$(jq -r --arg t "$SUB_TITLE" 'first(.[] | select(.title == $t) | .url) // ""' <<< "$EXISTING_JSON")"
-              printf '%s\n' "- ${SUB_TITLE} - ${URL} _(existing)_" >> /tmp/goal_links.md
-              echo "Skipping existing goal: ${SUB_TITLE}"
-              continue
-            fi
             KIND="$(jq -r ".[$i].kind" goals.json)"
-            SUB_BODY="$(printf '%s\n\nKind: %s\nIntegration branch: issue/%s\nParent: #%s\nAcceptance: post result as comment + link evidence.' "$DETAIL" "$KIND" "$ISSUE_NUMBER" "$ISSUE_NUMBER")"
-            URL="$(gh issue create --title "$SUB_TITLE" --body "$SUB_BODY" --label "ai-goal" --label "goal/tl")"
-            printf '%s\n' "- ${SUB_TITLE} - ${URL}" >> /tmp/goal_links.md
-            CREATED=$((CREATED + 1))
-            echo "Created: ${URL}"
+            if [ "$KIND" = "code" ]; then
+              # Development goal: exactly the pre-Phase-5a behavior.
+              SUB_TITLE="[GOAL] ${TITLE} (from #${ISSUE_NUMBER})"
+              if grep -Fqx -- "$SUB_TITLE" <<< "$EXISTING_TITLES"; then
+                URL="$(jq -r --arg t "$SUB_TITLE" 'first(.[] | select(.title == $t) | .url) // ""' <<< "$EXISTING_JSON")"
+                printf '%s\n' "- ${SUB_TITLE} - ${URL} _(existing)_" >> /tmp/goal_links.md
+                echo "Skipping existing goal: ${SUB_TITLE}"
+                continue
+              fi
+              SUB_BODY="$(printf '%s\n\nKind: %s\nIntegration branch: issue/%s\nParent: #%s\nAcceptance: post result as comment + link evidence.' "$DETAIL" "$KIND" "$ISSUE_NUMBER" "$ISSUE_NUMBER")"
+              URL="$(gh issue create --title "$SUB_TITLE" --body "$SUB_BODY" --label "ai-goal" --label "goal/tl")"
+              printf '%s\n' "- ${SUB_TITLE} - ${URL}" >> /tmp/goal_links.md
+              CREATED=$((CREATED + 1))
+              echo "Created goal: ${URL}"
+            else
+              # Non-development goal: a linked ticket whose deliverable is the
+              # detail itself. No branch, no files, no TL/Programmer/Review.
+              case "$KIND" in
+                docs)        KIND_TITLE="Docs" ;;
+                analysis)    KIND_TITLE="Analysis" ;;
+                requirement) KIND_TITLE="Requirement" ;;
+                user-story)  KIND_TITLE="User Story" ;;
+                *)           KIND_TITLE="$KIND" ;;
+              esac
+              SUB_TITLE="[${KIND_TITLE}] ${TITLE}"
+              if jq -e --arg t "$SUB_TITLE" --arg o "Origin: #${ISSUE_NUMBER}" \
+                  '[.[] | select(.title == $t and ((.body // "") | contains($o)))] | length > 0' \
+                  <<< "$EXISTING_TICKETS_JSON" >/dev/null 2>&1; then
+                printf '%s\n' "- ${SUB_TITLE} _(existing)_" >> /tmp/ticket_links.md
+                echo "Skipping existing ticket: ${SUB_TITLE}"
+                continue
+              fi
+              SUB_BODY="$(printf '%s\n## %s\n%s\n\n---\nOrigin: #%s\nGenerated by agent-orchestrate from issue #%s.\n' \
+                "<!-- agent-ticket:v1 origin:#${ISSUE_NUMBER} -->" "$KIND_TITLE" "$DETAIL" "$ISSUE_NUMBER" "$ISSUE_NUMBER")"
+              URL="$(gh issue create --title "$SUB_TITLE" --body "$SUB_BODY" --label "kind/${KIND}" --label "ai-ticket")"
+              printf '%s\n' "- ${SUB_TITLE} - ${URL}" >> /tmp/ticket_links.md
+              TICKETS_CREATED=$((TICKETS_CREATED + 1))
+              echo "Created ticket: ${URL}"
+            fi
           done
 
           # Success marker only when not already present; label added last, after
@@ -207,21 +265,46 @@ jobs:
           if [ "$MARKER" != "true" ]; then
             {
               printf '<!-- orchestrator:v1 -->\n'
-              printf 'Orchestrator broke this issue into %s goal(s) (created %s this run):\n\n' "$COUNT" "$CREATED"
+              printf 'Orchestrator broke this issue into %s goal(s) (created %s code goal(s) and %s ticket(s) this run):\n\n' "$COUNT" "$CREATED" "$TICKETS_CREATED"
+              printf '#### Code goals\n\n'
               if [ -s /tmp/goal_links.md ]; then
                 cat /tmp/goal_links.md
               else
-                printf '_All goals already existed; nothing new created._\n'
+                printf '_None._\n'
               fi
-              printf '\nIntegration branch: `issue/%s` (cut from fresh `origin/dev`).\n\n' "$ISSUE_NUMBER"
-              printf 'Each goal commits to its own `task/<goal#>` branch, then auto-merges (`--no-ff`) into `issue/%s`.\n' "$ISSUE_NUMBER"
-              printf 'When every goal is `goal/done`, a single PR `issue/%s` -> `dev` is opened for human review/merge.\n' "$ISSUE_NUMBER"
+              printf '\n#### Tickets\n\n'
+              if [ -s /tmp/ticket_links.md ]; then
+                cat /tmp/ticket_links.md
+              else
+                printf '_None._\n'
+              fi
+              if [ "$CODE_COUNT" -gt 0 ]; then
+                printf '\nIntegration branch: `issue/%s` (cut from fresh `origin/dev`).\n\n' "$ISSUE_NUMBER"
+                printf 'Each code goal commits to its own `task/<goal#>` branch, then auto-merges (`--no-ff`) into `issue/%s`.\n' "$ISSUE_NUMBER"
+                printf 'When every code goal is `goal/done`, a single PR `issue/%s` -> `dev` is opened for human review/merge.\n' "$ISSUE_NUMBER"
+              else
+                printf '\nNo code goals: no integration branch and no PR are created. The tickets above are the deliverables.\n'
+              fi
               printf 'Agents never merge to `dev` (or `main`).\n'
               printf '\nAgent: pure GitHub workflow agent | Model: thinkingmachines/inkling:free\n'
             } | gh issue comment "$ISSUE_NUMBER" --body-file -
           else
             echo "orchestrator marker already present; skipping summary comment"
           fi
+
+          # Docs-only parent (zero code goals): the orchestrator marks the parent
+          # complete itself - no branch and no PR to await. Idempotent: skipped
+          # when the marker already exists; --add-label is itself idempotent.
+          if [ "$CODE_COUNT" -eq 0 ]; then
+            PDMARK="$(gh issue view "$ISSUE_NUMBER" --json comments \
+              --jq '[.comments[].body] | join("\n") | contains("<!-- parent-done:v1 -->")')"
+            if [ "$PDMARK" != "true" ]; then
+              gh issue comment "$ISSUE_NUMBER" --body "<!-- parent-done:v1 -->
+          This parent has no \`kind: code\` goals, so no integration branch and no PR are created. The non-development tickets created above are the deliverables; the parent is complete and is marked \`status:done\`."
+            fi
+            gh issue edit "$ISSUE_NUMBER" --add-label "status:done"
+          fi
+
           gh issue edit "$ISSUE_NUMBER" --add-label "triage/accepted"
 
       # Chain to the TL. `github.token`-created `goal/tl` label events do NOT
@@ -252,6 +335,10 @@ jobs:
           # just created in the previous step, and the search index can lag,
           # which would leave a fresh goal undetected and stall the chain. Scope
           # to THIS parent locally by exact title suffix instead.
+          #
+          # Only `kind: code` goals carry `ai-goal` + `goal/tl`; non-development
+          # tickets are labeled `ai-ticket` + `kind/*` and are therefore never
+          # selected here. The TL is dispatched for code goals only.
           GOALS_JSON="$(gh issue list --label ai-goal --state all --limit 200 \
             --json number,title,labels)"
 
