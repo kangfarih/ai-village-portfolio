@@ -885,3 +885,147 @@ and never force-push; the final `issue/<parent#>` → `dev` PR is Phase 4b-2.
   `agent-build` workflow still exists; this task replaces the Programmer's
   text-only deliverable with committed branch work, so the `/approve` gate is
   now orthogonal to the loop (worth reconciling in a later phase).
+
+---
+
+# Phase 4b-2 — PO review accepts `result:v1` + opens the single human-gated PR (`dev` only — NEVER main)
+
+Third branch-model slice and the closure of the loop: `agent-review` now accepts
+the Phase 4b-1 `result:v1` changeset, mechanically verifies the declared files
+on the integration branch, and — once every child goal of a parent is
+`goal/done` — opens **exactly one** PR `issue/<parent#>` → `dev` for human
+review/merge. Agents never merge and never push `dev`/`main`.
+`.github/scripts/llm_json.sh` is unchanged and no role inlines `curl`.
+
+## What changed (ONLY these 3 files)
+
+- `.github/workflows/agent-review.yml` (main work)
+  - **Permissions:** job gained `pull-requests: write` (kept `contents: read`,
+    `issues: write`, `actions: write`); top-level stays `permissions: {}`; no
+    `contents: write` (review never writes repo contents).
+  - **New TL acceptance:** the `tl:v1` `kind` set widened to
+    `code|docs|analysis|requirement|user-story` (both the `TL_SCHEMA` reader and
+    the system prompt description). Everything else about `tl:v1` unchanged.
+  - **New `result:v1`:** `RESULT_SCHEMA` replaced with the Phase 4b-1 shape
+    (`summary`, `kind`, string-array `files`, string-array `changes`, `evidence`,
+    `commit`, `merge_commit`, `task_branch`, `integration_branch`, boolean
+    `needs_human`, `needs_human_reason`, numeric `attempt`). Missing/invalid →
+    loud comment + `needs-human` + `exit 1`. `needs_human:true` → loud comment +
+    `needs-human` + `exit 1`, with **no LLM call** (also no LLM when the payload
+    is missing).
+  - **Mechanical file verification (new, before the LLM):** for every
+    `result.files` path, `gh api repos/<repo>/contents/<path>?ref=<integration>`
+    (no git auth) → a non-empty `.sha` means `present`, else `MISSING`. Builds a
+    `FILE_EVIDENCE` list and sets `MISSING_ANY`. Computes `AHEAD_BY` via
+    `gh api repos/<repo>/compare/dev...<integration>` (fallback `0`). All of
+    `FILE_EVIDENCE`, `AHEAD_BY`, the full `result` and the TL `acceptance` are
+    included in the LLM user prompt; when a file is `MISSING` the prompt forbids
+    a `done` verdict, and a post-LLM guard force-downgrades a `done` to `revise`.
+  - **Verdict unchanged:** same `{verdict,reason,missing,guidance}` schema and
+    `<!-- verdict:v1 -->` comment; `done` → `goal/done`; `revise` →
+    `<!-- attempts:NEXT -->` (NEXT=ATTEMPT+1), `needs-human` + loud escalation
+    when `NEXT > MAX_REVISE=3`, else `goal/tl` (+ the existing
+    `agent-techlead` dispatch). No dispatch on `done`/`needs-human`.
+  - **Parent termination + the single PR (new):** after a `done` verdict whose
+    parent is complete (non-empty children, all `goal/done`) and not already
+    marked, resolve `PINTEGRATION=issue/<parent#>` and recompute `PAHEAD_BY`.
+    When `PAHEAD_BY > 0`, reuse an open PR for the same head
+    (`gh pr list --head ... --state open`) or open ONE with
+    `gh pr create --base dev --head "${PINTEGRATION}"`, title
+    `[Issue #<parent#>] <parent title>`, and a body listing the goals + links +
+    "Human review required; the agent will not merge. Do not merge until
+    reviewed." When the branch is missing or `PAHEAD_BY == 0`, no PR is opened
+    and the comment says "no changes to propose". Either way the parent gets
+    `<!-- parent-done:v1 -->` + `status:done`, idempotently. **Never**
+    `gh pr merge`, `git merge` to `dev`, or a `dev`/`main` push. The `ERR` trap
+    still posts a loud comment and exits non-zero.
+  - **Header comment** updated to describe the final PR and to state the review
+    opens (but never merges) it and does not push `dev`/`main`.
+- `.agents/orchestrator/STATE-MACHINE.md` — appended **§10 Final PR & human
+  gate (Phase 4b-2)**: exactly one `issue/<parent#>` → `dev` PR when
+  `ahead_by > 0`, idempotent by open PR head; human reviews/merges; agents never
+  merge or push `dev`/`main`; `status:done` + `parent-done:v1`; the review needs
+  `pull-requests: write` and no `contents: write`; the mechanical file check;
+  and that non-dev-only parents still PR their markdown artifacts.
+- `.agents/orchestrator/NOTES.md` (this section).
+
+## Verification (actual output)
+
+- `ruby -ryaml -e "YAML.load_file('.github/workflows/agent-review.yml')"` →
+  `YAML OK`.
+- Extracted all 4 `run:` blocks (Ruby YAML) and `bash -n` each → `bash -n OK`
+  for all 4. (`shellcheck` not installed on the host.)
+- Structural assertions (Ruby YAML + source scan): job permissions
+  `{"contents"=>"read","issues"=>"write","pull-requests"=>"write",
+  "actions"=>"write"}`, top-level `{}`; **no** `contents: write`;
+  `gh pr create` present once with `--base dev --head "${PINTEGRATION}"`;
+  **no** `gh pr merge`, **no** `git merge`, **no** `git push` to `dev`/`main`;
+  new `result` schema (`merge_commit`, `all(.files[]; type=="string")`,
+  `.attempt|type=="number"`, boolean `needs_human`) present; widened TL `kind`
+  set present; `FILE_EVIDENCE` / `AHEAD_BY` / `compare/dev...` / contents-`?ref=`
+  present; `parent-done:v1` + "no changes to propose" + the human-review note
+  present.
+- `jq -e` schema tests (on-disk schema strings): new result schema **accepts** a
+  full valid object and **rejects** the old text-only shape, missing
+  `merge_commit`, non-array `files`, string `needs_human`, and missing
+  `attempt`; TL schema **accepts** `code/docs/analysis/requirement/user-story`
+  and rejects `bogus`/`CODE`.
+- **Mock `gh` + mock `llm_json.sh` end-to-end (42/42 assertions)** drove the
+  extracted review step:
+  - (a) all children `goal/done` + `AHEAD_BY=10` → **one** `gh pr create` with
+    `head=issue/55`/`base=dev`, `parent-done:v1` + PR URL posted on the parent,
+    `status:done`, goal `goal/done`, 1 LLM call; prompt contained
+    `a/b.txt=present`, "ahead of dev by 10 commit(s)", and the acceptance item;
+  - (b) re-run (same state) → no second PR, no second LLM call (verdict:v1
+    idempotency + parent marker);
+  - (b2) open PR already exists for `issue/55` and the parent is unmarked → no
+    new PR, the existing PR URL is reused in the parent comment, `status:done`;
+  - (c) `AHEAD_BY=0` → no PR, "no changes to propose" note, still `status:done`;
+  - (d) one child not `goal/done` → no PR, no `parent-done:v1`, no `status:done`;
+  - (e) `result.needs_human:true` → `needs-human`, **no** LLM call, no PR;
+  - (f) `result:v1` missing → `needs-human`, **no** LLM call, no PR;
+  - (g) declared file `c.md` MISSING while the model returned `done` → prompt
+    flags `c.md=MISSING` + "MUST NOT be", verdict forced to `revise`, goal
+    re-entered `goal/tl`, no PR.
+- `git status --short` shows exactly the 3 intended files.
+
+## Commit + push record (dev only — NEVER main)
+
+- Message: `feat(review): accept result:v1, verify files, open the single human-gated PR (Phase 4b-2)`.
+- Files in this commit (ONLY these 3):
+  - `.github/workflows/agent-review.yml`
+  - `.agents/orchestrator/STATE-MACHINE.md` (§10 appended)
+  - `.agents/orchestrator/NOTES.md` (this section)
+- Push: `git push origin dev` (no `-i`, no `--force`, no `--no-verify`).
+- Commit SHA + push result: recorded in the follow-up notes-only commit (a SHA
+  cannot be recorded inside the commit it names).
+
+## Open risks / follow-ups
+
+- **Live LLM/`gh`/PR unverified.** YAML parse + `bash -n` + structural + schema
+  checks + a mocked end-to-end flow prove syntax and control flow only. The real
+  Actions runner, the OpenRouter path, `pull-requests: write` on the worker
+  token, branch protections, and the real `compare`/`contents`/`pr create`
+  behavior have not run. First trial = a complete parent whose goals are all
+  `goal/done`, then confirm one open `issue/<parent#>` → `dev` PR appears and no
+  agent merge occurs.
+- **`compare/dev...issue/<n>` with an unencoded slash.** The state-machine
+  command is used verbatim; if the API rejects the slashed ref it falls back to
+  `AHEAD_BY=0` → no PR (a soft failure that is still visible in the parent
+  comment as "no changes to propose"). Worth confirming on the live runner; if
+  needed, URL-encode the head ref (`issue%2F<n>`) in both compare and PR calls.
+- **Review token scope widened.** `pull-requests: write` lets the review open
+  PRs; it still has no `contents: write`, and the workflow contains no merge or
+  `dev`/`main` push, so the only write beyond comments/labels is a PR.
+- **Mechanical file check is per declared path only.** A result that lies about
+  which files it touched (or omits the real deliverable) is not caught; the LLM
+  still sees `changes`/`evidence` and the diff is human-reviewed in the final
+  PR.
+- **Non-dev parents with no code goals** still open a PR carrying the markdown
+  artifacts (`.agents/issue-<parent#>/goal-<goal#>.md`); that is intended but
+  means `dev` receives documentation commits once a human merges.
+- **Parent completion still relies on `gh issue list --search` indexing**; a
+  freshly labeled final child can be briefly stale, delaying PR creation. The
+  `agent-review-<n>` concurrency group serializes review runs per goal and the
+  block is idempotent, so a retry is safe.
+

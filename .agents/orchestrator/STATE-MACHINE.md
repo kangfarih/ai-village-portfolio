@@ -430,3 +430,57 @@ opens **ONE** pull request `issue/<parent#>` → `dev` for human review and merg
   declare it). Opening the final PR requires `pull-requests: write` for the
   review role. `issues: write` remains for labels and comments, and
   `actions: write` for `workflow_dispatch` chaining (§8).
+
+---
+
+## 10. Final PR & human gate (Phase 4b-2)
+
+When **every** child goal of a parent is `goal/done` (§3/§7), `agent-review`
+opens **exactly one** pull request from the parent's integration branch to `dev`
+and stops. This is the ONLY PR the agent loop opens, and it is **human-gated**:
+
+1. The review (already running for the final `done` goal) resolves
+   `integration = issue/<parent#>`.
+2. It computes `ahead_by` from
+   `gh api repos/<repo>/compare/dev...issue/<parent#>` (a missing branch or a
+   failed compare reads as `0`).
+3. **If `ahead_by > 0`:** it opens
+   `gh pr create --base dev --head issue/<parent#>` with a title
+   `[Issue #<parent#>] <parent title>` and a body listing the child goals +
+   links and stating *"Human review required; the agent will not merge. Do not
+   merge until reviewed."* Idempotent by open PR head:
+   `gh pr list --head issue/<parent#> --state open` — an existing open PR is
+   reused, never duplicated.
+4. **If the branch is missing or `ahead_by == 0`:** no PR is opened; the
+   `<!-- parent-done:v1 -->` comment records "no changes to propose".
+5. In both cases the parent gets `status:done` + the `<!-- parent-done:v1 -->`
+   marker (idempotent: skipped when the marker or `status:done` already exists).
+   The issue is **not** auto-closed.
+
+Before opening the PR the review also performs a **mechanical file check**: each
+`result:v1` path is looked up on the integration branch via
+`gh api repos/<repo>/contents/<path>?ref=issue/<parent#>` (no git auth). A
+`MISSING` path makes the prompt instruct a non-`done` verdict, and a model that
+still returns `done` is force-downgraded to `revise`. The `ahead_by` count and
+the file evidence are included in the verdict prompt.
+
+Hard rules:
+
+- **Agents never merge.** There is no `gh pr merge`, no `git merge` into
+  `dev`/`main`, and no push of `dev`/`main` anywhere in the review role. The
+  human is the only actor who merges the PR.
+- **Review permissions.** Opening (and listing) the PR requires the review job's
+  `pull-requests: write`; it keeps `contents: read` (it never writes repo
+  contents), `issues: write` (labels/comments) and `actions: write`
+  (`workflow_dispatch` chaining, §8). It explicitly does **not** add
+  `contents: write`.
+- **Non-development artifacts are not lost.** Goals of `kind` `docs`,
+  `analysis`, `requirement`, or `user-story` commit their markdown artifacts
+  (`.agents/issue-<parent#>/goal-<goal#>.md`, §9) to the same integration
+  branch, so a parent whose goals are all non-development still produces a
+  non-empty `issue/<parent#>` → `dev` PR carrying those markdown files.
+- **Result contract.** The review accepts the Phase 4b-1 `result:v1` shape
+  (paths-only `files`, `commit`, `merge_commit`, `task_branch`,
+  `integration_branch`, `needs_human`, `needs_human_reason`, `attempt`). A
+  missing/invalid payload or `needs_human:true` escalates to `needs-human`
+  without an LLM call.
