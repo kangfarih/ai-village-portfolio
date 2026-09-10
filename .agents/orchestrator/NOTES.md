@@ -1527,7 +1527,9 @@ is unchanged and no role inlines `curl`.
   - `.agents/orchestrator/STATE-MACHINE.md` (§9 updated, §11 appended)
   - `.agents/orchestrator/NOTES.md` (this section)
 - Push: `git push origin dev` (no `-i`, no `--force`, no `--no-verify`).
-- Commit SHA + push result: `<recorded post-push>` — `git push origin dev` OK.
+- Commit SHA + push result: `ae8c759` — `git push origin dev` OK
+  (`47ce866..ae8c759  dev -> dev`, after rebasing onto the `origin/dev`
+  `Merge pull request #14` commit that landed mid-task).
   This notes-record entry is a second, notes-only commit recording the SHA
   (its own SHA is recorded post-push, not invented here).
 
