@@ -310,49 +310,77 @@ GitHub suppresses workflow runs for events a `GITHUB_TOKEN` produces:
 
 So the `issues: labeled` triggers alone leave the automated
 PO → TL → Programmer → PO-review chain dead: the next role never starts.
-(The bot-sender `if:` guard is a second, independent reason the token-made
-label edit would not be picked up even if the run *were* created. Goal issues
-are Bot-authored, so the guard checks the event **sender**, not the issue
-author — a human re-applying a role's entry label must still run the role.)
+(A bot-sender `if:` guard was a second, independent reason a token-made label
+edit would not be picked up even if the run *were* created. Goal issues are
+Bot-authored, so the guard checked the event **sender**, not the issue author.
+That guard, and the downstream `issues: labeled` triggers, were subsequently
+removed — see *Single entry point; downstream dispatch-only* below.)
 
 ### Chosen mechanism: explicit `workflow_dispatch`
 
 `workflow_dispatch` is an official exception to the suppression rule, so each
 role explicitly dispatches the next one after its own work succeeds. No App or
-PAT identity is introduced — the same `GITHUB_TOKEN` is used, and the guard
-short-circuits on `github.event_name == 'workflow_dispatch'` so the dispatch
-path never evaluates `github.event.issue.*`.
+PAT identity is introduced — the same `GITHUB_TOKEN` is used; the downstream
+roles no longer evaluate `github.event.issue.*` at all, since their label
+triggers and guards were removed.
 
-- Every role workflow adds a `workflow_dispatch` trigger with a required
-  `issue_number` input, alongside the original `issues: types: [labeled]`.
+- Every role workflow declares a `workflow_dispatch` trigger with a required
+  `issue_number` input. The four downstream roles (`agent-orchestrate`,
+  `agent-techlead`, `agent-programmer`, `agent-review`) have **no other
+  trigger**; only `agent-triage` keeps `issues: types: [labeled]` as the loop's
+  single entry point.
 - Every role job adds `actions: write` to its job permissions (the minimum
   needed to call `gh workflow run`); `contents: read` and `issues: write` stay.
 - Every concurrency group and every `ISSUE_NUMBER` env uses
-  `${{ github.event.issue.number || inputs.issue_number }}` so both triggers
-  resolve the issue. `cancel-in-progress: false` is unchanged (§5).
+  `${{ inputs.issue_number }}`. `cancel-in-progress: false` is unchanged (§5).
 - The final step of each role dispatches the next role with
   `gh workflow run <next>.yml --repo "<repo>" --ref dev -f issue_number="<N>"`
   and `GH_TOKEN: ${{ github.token }}`. A failed dispatch posts a loud comment
   on the issue and exits non-zero.
 - Because `workflow_dispatch` has no `github.event.issue`, no step may read
-  `github.event.issue.*` outside the job `if:`; the `ISSUE_NUMBER` env is the
-  only source of the issue number.
+  `github.event.issue.*`; the `ISSUE_NUMBER` env is the only source of the issue
+  number. The downstream job-level `if:` guards (which inspected
+  `github.event.issue.*`) were removed together with the label triggers.
 
 ### Dispatch chain
 
 | Role (`workflow`) | On success dispatches | Notes |
 |---|---|---|
+| Triage `agent-triage` | `agent-orchestrate` | The single `issues: labeled` entry point; dispatches after classifying/labeling. |
 | PO `agent-orchestrate` | `agent-techlead` for each goal | Per goal still at `goal/tl`; goals already at a later state are skipped. |
 | TL `agent-techlead` | `agent-programmer` | After the spec is written and the goal is at `goal/ready`. |
 | Programmer `agent-programmer` | `agent-review` | Only when the success path moved the goal to `goal/review`; `needs-human` dispatches nothing. |
 | PO `agent-review` | `agent-techlead` | Only on a `revise` verdict; a `done` verdict is terminal (parent termination runs inline) and an escalation to `needs-human` dispatches nothing. |
 
-### Label triggers remain
+### Single entry point; downstream dispatch-only
 
-The `issues: labeled` triggers are kept on every role for human/manual starts
-and re-runs (a human adding `ai-orchestrate`, or re-applying `goal/tl` /
-`goal/ready` / `goal/review` after fixing a failure). `workflow_dispatch` is
-additive, not a replacement; both paths share the same role logic.
+`agent-triage` is the **ONLY** workflow on the `issues: types: [labeled]`
+trigger. It is the single entry point and the sole `issues: labeled` listener:
+a human adds `ai-triage`, triage classifies/labels the issue, and its final step
+dispatches `agent-orchestrate` (`gh workflow run agent-orchestrate.yml ... -f
+issue_number=<N>`).
+
+The four downstream role workflows are **`workflow_dispatch`-only**. Their
+former `issues: labeled` triggers were removed to eliminate the
+"many runs, most skipped" noise: a `labeled` event fanned out to *every*
+listening role workflow and each job's `if:` then skipped the roles whose label
+did not match, so adding any single label produced a wall of skipped runs. Now
+adding a label starts at most the one triage run, and each downstream role is
+started only by an explicit dispatch.
+
+The chain is:
+
+`agent-triage` -> `agent-orchestrate` -> (per code goal) `agent-techlead`
+-> `agent-programmer` -> `agent-review` -> (on revise) `agent-techlead`.
+
+### Human recovery / resume
+
+Because the downstream label triggers are gone, re-applying `goal/tl` /
+`goal/ready` / `goal/review` no longer starts a run. To resume a `needs-human`
+goal, run the relevant role workflow manually from the Actions UI (Run workflow
+-> `issue_number`) or via
+`gh workflow run <role>.yml -f issue_number=<N>`. Re-running `agent-triage`
+(remove/re-add the `ai-triage` label) restarts the whole chain idempotently.
 
 ### Trade-off
 
@@ -365,13 +393,20 @@ with jittered backoff and honors `Retry-After` (§1). The concurrency groups
 against itself per issue, so a re-dispatch cannot run a role twice in parallel
 on the same issue.
 
+Dispatch-only downstream is the trade-off that removes the skipped-run noise:
+adding any label now starts at most one run (`agent-triage`), at the cost of the
+old label-click resume convenience. Resuming a stalled role is now an explicit
+Actions -> Run workflow (or `gh workflow run`) rather than re-applying a
+`goal/*` label, and re-running `agent-triage` restarts the whole chain
+idempotently.
+
 ### Idempotency and retries
 
 Each role remains idempotent per attempt (§6/§7): re-running a role for an
 attempt that already has its marker short-circuits the LLM and only re-applies
 the transition. Repeated dispatches are therefore safe, and a failed hand-off
-can be retried by re-applying the role's entry label or re-running the
-workflow manually with `issue_number`.
+can be retried by re-running the workflow manually with `issue_number` (or by
+re-running `agent-triage` to restart the chain).
 
 ---
 

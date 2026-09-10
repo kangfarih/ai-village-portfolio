@@ -11,7 +11,9 @@ permissions: {}
 # (`status:done` + `<!-- parent-done:v1 -->`) and open the ONE human-gated PR
 # `issue/<parent#>` -> `dev`; the agent NEVER merges it and NEVER pushes
 # `dev`/`main`. The parent is never auto-closed.
-# Fires when the Programmer adds the `goal/review` label to a goal issue.
+# Started ONLY by an explicit `workflow_dispatch` — from the previous role's
+# chain (agent-programmer) or manually via Actions -> Run workflow.
+# `agent-triage` is the sole `issues: labeled` entry point in the loop.
 # Uses GITHUB_TOKEN with `issues: write` + `pull-requests: write` (the single
 # final PR) + `actions: write` (to dispatch the next role). No `contents: write`;
 # branch existence / `ahead_by` / file checks use a read-only git fetch (the
@@ -20,11 +22,8 @@ permissions: {}
 #
 # Chaining: a `GITHUB_TOKEN`-made `goal/tl` label does not start a new run, so a
 # `revise` verdict dispatches `agent-techlead` explicitly (see STATE-MACHINE.md
-# §8). A `done` verdict is terminal and dispatches nothing. The
-# `issues: labeled` trigger stays for human/manual starts and re-runs.
+# §8). A `done` verdict is terminal and dispatches nothing.
 on:
-  issues:
-    types: [labeled]
   workflow_dispatch:
     inputs:
       issue_number:
@@ -33,19 +32,10 @@ on:
 
 jobs:
   review:
-    # Run if the `goal/review` label is present and the trigger is human/agent,
-    # or on an explicit dispatch from the Programmer. The issue MAY be authored
-    # by `GITHUB_TOKEN` (Bot): goal issues are Bot-authored, so the documented
-    # human label-recovery path must not be blocked by the issue author. Only the
-    # event SENDER is guarded against bots.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (contains(github.event.issue.labels.*.name, 'goal/review') &&
-       github.event.sender.type != 'Bot')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
-      group: agent-review-${{ github.event.issue.number || inputs.issue_number }}
+      group: agent-review-${{ inputs.issue_number }}
       cancel-in-progress: false
     permissions:
       contents: read
@@ -84,7 +74,7 @@ jobs:
 
       - name: Review deliverable + apply verdict (LLM, loud failure)
         env:
-          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_API_KEY_2: ${{ secrets.OPENROUTER_API_KEY_2 }}
@@ -457,7 +447,7 @@ jobs:
       # nothing (the parent termination already ran inline above).
       - name: Dispatch next role (Tech Lead, on revise)
         env:
-          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail

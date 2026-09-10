@@ -6,7 +6,9 @@ permissions: {}
 # Programmer role: goal issue -> real file changeset (LLM) -> commit to an
 # agent-owned `task/<goal#>` branch -> auto-merge (`--no-ff`) into the parent's
 # `issue/<parent#>` integration branch -> `<!-- result:v1 -->` comment ->
-# `goal/review`. Fires when the TL adds the `goal/ready` label to a goal issue.
+# `goal/review`. Started ONLY by an explicit `workflow_dispatch` — from the
+# previous role's chain (agent-techlead) or manually via Actions -> Run workflow.
+# `agent-triage` is the sole `issues: labeled` entry point in the loop.
 # Uses GITHUB_TOKEN with `contents: write` (task/integration branches only),
 # `issues: write` (labels/comments) and `actions: write` (to dispatch the next
 # role). Agents NEVER push `dev`/`main`, never force-push, and never merge to
@@ -15,10 +17,7 @@ permissions: {}
 #
 # Chaining: a `GITHUB_TOKEN`-made `goal/review` label does not start a new run,
 # so this role dispatches `agent-review` explicitly (see STATE-MACHINE.md §8).
-# The `issues: labeled` trigger stays for human/manual starts and re-runs.
 on:
-  issues:
-    types: [labeled]
   workflow_dispatch:
     inputs:
       issue_number:
@@ -27,16 +26,10 @@ on:
 
 jobs:
   programmer:
-    # Run if the `goal/ready` label is present and the trigger is human/agent, or
-    # on an explicit dispatch from the TL.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (contains(github.event.issue.labels.*.name, 'goal/ready') &&
-       github.event.sender.type != 'Bot')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
-      group: agent-programmer-${{ github.event.issue.number || inputs.issue_number }}
+      group: agent-programmer-${{ inputs.issue_number }}
       cancel-in-progress: false
     permissions:
       contents: write
@@ -73,7 +66,7 @@ jobs:
 
       - name: Build changeset + task branch + auto-merge (LLM, loud failure)
         env:
-          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_API_KEY_2: ${{ secrets.OPENROUTER_API_KEY_2 }}
@@ -452,7 +445,7 @@ jobs:
       # outcome must not start a review.
       - name: Dispatch next role (PO review)
         env:
-          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
