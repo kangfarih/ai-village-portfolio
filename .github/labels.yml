@@ -13,3 +13,9 @@
 - name: "status:backlog"
   color: "EDEDED"
   description: "Triaged, waiting to be sliced/approved"
+- name: ai-orchestrate
+  color: "0E8A16"
+  description: "Opt-in to orchestrator delegation"
+- name: ai-goal
+  color: "1D76DB"
+  description: "Orchestrator-delegated sub-goal"

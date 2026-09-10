@@ -1,0 +1,137 @@
+name: agent-orchestrate
+
+# Empty default: jobs declare their own least-privilege permissions below.
+permissions: {}
+
+# v1 orchestrator (PLAN: Issue -> LLM goal breakdown -> sub-issue delegation).
+# Fires when a human adds the `ai-orchestrate` label to an issue.
+# Trial simplicity: uses GITHUB_TOKEN (use_github_token), no App install.
+# Human merge + /approve judgment stay human; this job only creates sub-issues + comments.
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  orchestrate:
+    # Run only if the `ai-orchestrate` label is present and the trigger is human.
+    if: >-
+      contains(github.event.issue.labels.*.name, 'ai-orchestrate') &&
+      github.event.issue.user.type != 'Bot' &&
+      github.event.sender.type != 'Bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: agent-orchestrate-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      # Agent is now pure GitHub workflow agent; model = thinkingmachines/inkling:free.
+      # No external action; native bash/comment steps only.
+      - name: Document pure GitHub workflow agent
+        run: |
+          echo "Agent: pure GitHub workflow agent"
+          echo "Model: thinkingmachines/inkling:free"
+
+      - name: Ensure orchestrate labels exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create "ai-orchestrate" --color "0E8A16" --description "Opt-in to orchestrator delegation" 2>/dev/null || true
+          gh label create "ai-goal" --color "1D76DB" --description "Orchestrator-delegated sub-goal" 2>/dev/null || true
+
+      - name: Break issue into goals (LLM with fallback)
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          GH_TOKEN: ${{ github.token }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+        run: |
+          set -euo pipefail
+          ISSUE_JSON="$(gh issue view "$ISSUE_NUMBER" --json title,body --jq '{title, body}')"
+          ISSUE_TITLE="$(printf '%s' "$ISSUE_JSON" | jq -r '.title')"
+          ISSUE_BODY="$(printf '%s' "$ISSUE_JSON" | jq -r '.body // ""')"
+          write_fallback() {
+            jq -n --arg n "$ISSUE_NUMBER" --arg t "$ISSUE_TITLE" '[
+              {"title": ("Research options for: " + $t), "detail": ("Parent issue #" + $n + ": survey viable options for the request and record evidence links for each.")},
+              {"title": ("Compare options vs criteria for: " + $t), "detail": ("Parent issue #" + $n + ": compare the researched options against the acceptance criteria in a table (option, pros, cons, effort).")},
+              {"title": ("Recommend approach and document for: " + $t), "detail": ("Parent issue #" + $n + ": recommend one approach, list concrete next steps, and link supporting evidence.")}
+            ]' > goals.json
+          }
+          LLM_OK=false
+          if [ -z "${OPENCODE_API_KEY:-}" ]; then
+            echo "OPENCODE_API_KEY is empty - skipping LLM, using template goals."
+            write_fallback
+          else
+            REQUEST="$(jq -n \
+              --arg title "$ISSUE_TITLE" \
+              --arg body "$ISSUE_BODY" \
+              '{model: "thinkingmachines/inkling:free",
+                messages: [
+                  {role: "system", content: "You are a tech-lead orchestrator. Break the GitHub issue into 3-6 concrete, verifiable goals. Reply with a JSON array only, each item {\"title\": string, \"detail\": string}. No markdown, no prose."},
+                  {role: "user", content: ($title + "\n\n" + $body)}
+                ],
+                max_tokens: 1500}')"
+            HTTP_CODE="$(curl -sS -o /tmp/llm_resp.json -w '%{http_code}' --fail-with-body \
+              -X POST "https://openrouter.ai/api/v1/chat/completions" \
+              -H "Authorization: Bearer $OPENCODE_API_KEY" \
+              -H "Content-Type: application/json" \
+              -d "$REQUEST" || true)"
+            if [ "${HTTP_CODE:-000}" != "200" ]; then
+              echo "LLM call failed (HTTP ${HTTP_CODE:-unknown}) - using template goals."
+              write_fallback
+            else
+              CONTENT="$(jq -r '.choices[0].message.content // ""' /tmp/llm_resp.json)"
+              CLEAN="$(printf '%s' "$CONTENT" | sed '/^```/d')"
+              if printf '%s' "$CLEAN" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1; then
+                NORMALIZED="$(printf '%s' "$CLEAN" | jq '[.[] | {title: (.title // ""), detail: (.detail // "")}] | map(select(.title != ""))')"
+                if [ "$(printf '%s' "$NORMALIZED" | jq 'length')" -gt 0 ]; then
+                  printf '%s' "$NORMALIZED" | jq '.' > goals.json
+                  LLM_OK=true
+                else
+                  echo "LLM goals empty after normalization - using template goals."
+                  write_fallback
+                fi
+              else
+                echo "LLM output was not a non-empty JSON array - using template goals."
+                write_fallback
+              fi
+            fi
+          fi
+          echo "LLM_OK=${LLM_OK}"
+          echo "Goals written to goals.json:"
+          cat goals.json
+
+      - name: Delegate goals as sub-issues
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          COUNT="$(jq '[.[:6][]] | length' goals.json)"
+          if [ "$COUNT" -eq 0 ]; then
+            echo "No goals to delegate - exiting without changes."
+            exit 0
+          fi
+          : > /tmp/goal_links.md
+          for ((i = 0; i < COUNT; i++)); do
+            TITLE="$(jq -r ".[$i].title" goals.json)"
+            DETAIL="$(jq -r ".[$i].detail" goals.json)"
+            SUB_TITLE="[GOAL] ${TITLE} (from #${ISSUE_NUMBER})"
+            SUB_BODY="$(printf '%s\n\nParent: #%s\nAcceptance: post result as comment + link evidence.' "$DETAIL" "$ISSUE_NUMBER")"
+            URL="$(gh issue create --title "$SUB_TITLE" --body "$SUB_BODY" --label "ai-goal" --json url --jq '.url')"
+            printf '%s\n' "- ${SUB_TITLE} - ${URL}" >> /tmp/goal_links.md
+            echo "Created: ${URL}"
+          done
+          {
+            printf 'Orchestrator broke this issue into %s goal(s):\n\n' "$COUNT"
+            cat /tmp/goal_links.md
+            printf '\nAgent: pure GitHub workflow agent | Model: thinkingmachines/inkling:free\n'
+          } | gh issue comment "$ISSUE_NUMBER" --body-file -
+          gh issue edit "$ISSUE_NUMBER" --add-label "triage/accepted"
