@@ -12,7 +12,7 @@
 #
 # Env:
 #   OPENROUTER_API_KEY[_2.._5]  (>=1 required) bearer tokens, tried in order; rotate on 401/402 or transport exhaustion; never logged
-#   MODEL                 default nex-agi/nex-n2.5-pro:free (override via env MODEL / repo variable MODEL)
+#   MODEL                 default nex-agi/nex-n2.5-mini:free (override via env MODEL / repo variable MODEL)
 #   OPENROUTER_ENDPOINT   default https://openrouter.ai/api/v1/chat/completions
 #   LLM_MAX_ATTEMPTS      default 3
 #   LLM_BACKOFF           default "5 15 45" seconds, indexed by attempt
@@ -92,7 +92,7 @@ done
 unset _k _v
 [ "${#KEYS[@]}" -gt 0 ] || fail "no API key configured (set OPENROUTER_API_KEY, optionally _2.._5)"
 
-MODEL="${MODEL:-nex-agi/nex-n2.5-pro:free}"
+MODEL="${MODEL:-nex-agi/nex-n2.5-mini:free}"
 ENDPOINT="${OPENROUTER_ENDPOINT:-https://openrouter.ai/api/v1/chat/completions}"
 MAX_ATTEMPTS="${LLM_MAX_ATTEMPTS:-3}"
 BACKOFF="${LLM_BACKOFF:-5 15 45}"

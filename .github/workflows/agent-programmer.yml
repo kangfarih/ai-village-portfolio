@@ -80,7 +80,7 @@ jobs:
           OPENROUTER_API_KEY_3: ${{ secrets.OPENROUTER_API_KEY_3 }}
           OPENROUTER_API_KEY_4: ${{ secrets.OPENROUTER_API_KEY_4 }}
           OPENROUTER_API_KEY_5: ${{ secrets.OPENROUTER_API_KEY_5 }}
-          MODEL: ${{ vars.MODEL || 'nex-agi/nex-n2.5-pro:free' }}
+          MODEL: ${{ vars.MODEL || 'nex-agi/nex-n2.5-mini:free' }}
           # Complete file contents need a large completion budget; the helper's
           # 1500 default truncates real changesets. Override with the repo
           # variable PROGRAMMER_MAX_TOKENS if a bigger budget is needed.
