@@ -565,8 +565,10 @@ model traffic still goes through `.github/scripts/llm_json.sh`; no role inlines
   - `.agents/orchestrator/STATE-MACHINE.md` (§7 appended)
   - `.agents/orchestrator/NOTES.md` (this section)
 - Push: `git push origin dev` (no `-i`, no `--force`, no `--no-verify`).
-- Commit SHA + push result: recorded post-push in the notes-only follow-up
-  commit (SHA unknowable before commit, so not invented here).
+- Commit SHA + push result: `7ded7bf` — `git push origin dev` OK
+  (`0a5f01b..7ded7bf  dev -> dev`).
+- This notes-record entry is a second, notes-only commit (its own SHA is
+  recorded post-push, not invented here).
 
 ## Open risks / follow-ups
 
