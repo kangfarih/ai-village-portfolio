@@ -27,6 +27,7 @@ jobs:
       contents: read
       issues: write
       pull-requests: read
+      actions: write
 
     steps:
       - uses: actions/checkout@v4
@@ -140,3 +141,17 @@ jobs:
           echo "Posting triage comment for issue #${ISSUE_NUMBER}: ${ISSUE_TITLE}"
           SUMMARY="This issue requires triage and prioritization. It has been labeled accordingly and is ready for review. The description outlines the problem clearly, and the criteria for resolution are specified. Dependencies and reproducibility need verification before proceeding."
           printf '%s\n' "${SUMMARY}" "" "Classified kind: ${KIND}" "" "DoR Checklist:" "- Description: clearly stated" "- Criteria: defined" "- Dependencies: identified" "- Priority: set" "- Reproducible: needs verification" "" "Agent: pure GitHub workflow agent | Model: thinkingmachines/inkling:free" "" "Do NOT open PRs. Do NOT push. Do NOT merge." | gh issue comment "${ISSUE_NUMBER}" --body-file -
+
+      # Hand the issue to the orchestrator. Label-only chaining is dead
+      # (`GITHUB_TOKEN`-created label events do not start new runs), so the
+      # PO -> orchestrator hand-off is an explicit `workflow_dispatch` (an
+      # official exception). Without this step, triage labels the issue and the
+      # loop never starts - the exact "triage ran but nothing was solved" gap.
+      - name: Hand off to orchestrator
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "Dispatching agent-orchestrate for issue #${ISSUE_NUMBER}"
+          gh workflow run agent-orchestrate.yml --repo "${{ github.repository }}" --ref dev -f issue_number="${ISSUE_NUMBER}"
