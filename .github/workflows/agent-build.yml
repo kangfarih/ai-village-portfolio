@@ -62,6 +62,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
+      - run: git config user.name "opencode-agent" && git config user.email "agent@users.noreply.github.com"
+        name: Set agent git identity
+
       # Pinned to anomalyco/opencode tag github-v1.2.25 (commit a3b97d9...).
       # Re-pin to a newer github-v* tag with: git ls-remote --tags https://github.com/anomalyco/opencode
       - uses: anomalyco/opencode/github@a3b97d9090ccf4aa9ac32268486283e3131e36b4 # github-v1.2.25
