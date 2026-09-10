@@ -94,11 +94,21 @@ The orchestrator creates sub-issues titled `[GOAL] <title> (from #<parent>)`:
 
 ### Upstream triage labels (owned by triage, NOT the goal loop)
 
-`triage/accepted`, `priority/important-soon`, and `kind/task` are **triage-owned**
-labels applied by `agent-triage`. The goal loop never sets
-`priority/important-soon` or `kind/task`; its only use of `triage/accepted` is as
-a parent completion signal added *after* successful delegation. Do not treat
-these as goal-state labels.
+`triage/accepted`, `priority/important-soon`, and `kind/<kind>` are
+**triage-owned** labels applied by `agent-triage`. The goal loop never sets
+`priority/important-soon` or a `kind/*` label; its only use of `triage/accepted`
+is as a parent completion signal added *after* successful delegation. Do not
+treat these as goal-state labels.
+
+### Triage classification
+
+`agent-triage` LLM-classifies the issue's `kind` into exactly one of
+`{feature, bug, task, requirement, user-story}`, applies the matching
+`kind/<kind>` label (plus `priority/important-soon` and `triage/accepted`), and
+falls back to `kind/task` on **any** LLM failure (missing/invalid key, non-200,
+or schema-invalid JSON). Triage must stay green — the classification call is
+wrapped so a helper failure never fails the job. All model traffic goes through
+`.github/scripts/llm_json.sh` (`--effort low`); no step inlines `curl`.
 
 ### Caps
 
