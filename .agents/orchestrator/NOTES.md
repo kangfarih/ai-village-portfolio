@@ -2075,3 +2075,51 @@ convenience.
 - Commit 2 (this NOTES record) —
   `docs(agents): record dispatch-only chaining and manual resume`; its own SHA
   and push range are recorded in the task report (not invented here).
+
+---
+
+# Fix — HTTP 200 with empty content is retried/rotated (`dev` only — NEVER main)
+
+**Symptom.** `agent-orchestrate` run #22 (issue #29) failed with
+`llm_json: HTTP 200 (primary) on key 1/5, attempt 1/3` immediately followed by
+`Error: llm_json: HTTP 200 but response contained no message content`. This is
+the "known gap" recorded in the model-selection section above: a provider can
+return HTTP 200 carrying an `{"error":...}` overload body (or an empty/truncated
+message) with no `choices[0].message.content`, and `llm_json.sh` treated **any**
+HTTP 200 as success — it checked content exactly once and failed fatally, with
+no retry and no key rotation.
+
+**Fix (`.github/scripts/llm_json.sh` only).**
+- New `extract_content()`: reads `.choices[0].message.content`, handles both the
+  plain-string and array-of-parts shapes, returns "" when absent. Now the single
+  extraction path for both the primary and correction replies.
+- New `finish_reason()`: `[finish=...]` diagnostic (never prints the body).
+- `post_with_retries` now treats HTTP 200 with empty content as **transient**:
+  jittered backoff up to `LLM_MAX_ATTEMPTS`, then rotate keys — identical to the
+  transport path. The provider `error.message` and `finish_reason` are included
+  in the diagnostic, so `finish=length` (reasoning consumed the token budget) is
+  distinguishable from a transient overload. Exhaustion still exits 1 loudly.
+- New `is_key_cap()`: a `429` whose body has
+  `error.metadata.limit_source == "openrouter_free_tier_daily"` is a key-scoped
+  cap, not a transient provider hiccup — the key is rotated immediately instead
+  of spending the backoff budget on a key that cannot succeed again today.
+
+**Verification (actual output).**
+- `bash -n` OK (`shellcheck` not installed on the host).
+- Mock-`curl` harness drove the helper end-to-end, **15/15 assertions pass**:
+  empty-200 then valid → 2 calls, exit 0, schema-valid output; HTTP-200 error
+  body then valid → retry, exit 0; all-empty across 3 keys × 2 attempts → 6
+  calls, exit 1, "empty-content exhausted" rotation logged; `429` free-tier cap
+  → key 2 used on attempt 1 (no backoff), exit 0; valid first call → 1 call,
+  exit 0; array-of-parts content extracted.
+- No live call was possible: the local OpenRouter key was rate-limited
+  (free-models-per-day 50, HTTP 429) at fix time. The next real
+  `agent-orchestrate` run exercises the live path.
+
+**Follow-up.** Porting this helper to a zero-dependency Node (`llm_json.mjs`)
+with a `node:test` parity suite is filed as `[T-0009]`. Bash remains the right
+tool for the `gh`/`git`/label glue.
+
+**Commit + push (dev only — NEVER main):**
+- `fix(agents): retry HTTP 200 empty-content + rotate on free-tier cap` to
+  `origin/dev`; SHA + push range recorded in the task report (not invented here).

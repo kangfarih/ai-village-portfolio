@@ -178,6 +178,34 @@ api_error_message() {
   printf '%s' "$msg" | tr '\n' ' ' | cut -c1-300
 }
 
+# Extract usable assistant content from the last response body, or "" when the
+# provider returned no message content. Handles the plain-string form and the
+# array-of-parts form. Reads $BODY_FILE; never prints the raw body. Some
+# providers return HTTP 200 with an {"error":...} overload body or an empty /
+# truncated message; callers must treat "" as a transient, not a success.
+extract_content() {
+  jq -r '
+    (.choices[0].message.content // "")
+    | if type == "string" then .
+      elif type == "array" then ([.[] | if type == "object" then (.text // "") else . end] | join(""))
+      else "" end
+  ' "$BODY_FILE" 2>/dev/null || true
+}
+
+# Short finish_reason for diagnostics ("" when absent). Never prints the body.
+finish_reason() {
+  jq -r '.choices[0].finish_reason // empty' "$BODY_FILE" 2>/dev/null || true
+}
+
+# A free-tier daily cap is key-scoped, not a transient provider hiccup: OpenRouter
+# returns HTTP 429 with error.metadata.limit_source == "openrouter_free_tier_daily".
+# Detect it so the caller rotates to the next key immediately instead of burning
+# the backoff budget on a key that cannot succeed again today.
+is_key_cap() {
+  [ "${1:-}" = "429" ] || return 1
+  jq -e '.error.metadata.limit_source == "openrouter_free_tier_daily"' "$BODY_FILE" >/dev/null 2>&1
+}
+
 # Apply +/-20% jitter to a base delay in seconds.
 with_jitter() {
   local base="${1:-0}"
@@ -236,8 +264,37 @@ post_with_retries() {
     while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
       post "$body" "$key"
       if [ "$HTTP_CODE" = "200" ]; then
-        echo "llm_json: HTTP 200 (${phase}) on key ${ki}/${n}, attempt ${attempt}/${MAX_ATTEMPTS}" >&2
-        return 0
+        if [ -n "$(extract_content)" ]; then
+          echo "llm_json: HTTP 200 (${phase}) on key ${ki}/${n}, attempt ${attempt}/${MAX_ATTEMPTS}" >&2
+          return 0
+        fi
+        # HTTP 200 with no assistant content: some providers return an
+        # overload/gateway {"error":...} body (or an empty/truncated message)
+        # with a success status. Treat it as transient exactly like a transport
+        # failure: back off, retry, then rotate keys. Previously this was fatal
+        # on the first attempt (NOTES.ts "known gap").
+        local empty_msg empty_fr
+        empty_msg="$(api_error_message)"
+        empty_fr="$(finish_reason)"
+        if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+          local edelay
+          edelay="$(retry_after)"
+          if [ -n "$edelay" ]; then
+            echo "llm_json: HTTP 200 empty content (${phase}) on key ${ki}/${n}${empty_fr:+ [finish=${empty_fr}]}${empty_msg:+ : ${empty_msg}}; honoring Retry-After=${edelay}s (attempt ${attempt}/${MAX_ATTEMPTS})" >&2
+          else
+            edelay="$(backoff_for $(( attempt - 1 )))"
+            echo "llm_json: HTTP 200 empty content (${phase}) on key ${ki}/${n}${empty_fr:+ [finish=${empty_fr}]}${empty_msg:+ : ${empty_msg}}; backoff ${edelay}s before attempt $(( attempt + 1 ))/${MAX_ATTEMPTS}" >&2
+          fi
+          sleep "$edelay"
+          attempt=$(( attempt + 1 ))
+          continue
+        fi
+        echo "llm_json: key ${ki}/${n} empty-content exhausted (HTTP 200, ${phase})${empty_fr:+ [finish=${empty_fr}]}${empty_msg:+ : ${empty_msg}} after ${attempt} attempt(s); rotating" >&2
+        break
+      fi
+      if is_key_cap "$HTTP_CODE"; then
+        echo "llm_json: key ${ki}/${n} hit the free-tier daily cap (HTTP 429); rotating (${phase})" >&2
+        break
       fi
       if is_key_failure "$HTTP_CODE"; then
         echo "llm_json: key ${ki}/${n} rejected HTTP ${HTTP_CODE}; rotating (${phase})" >&2
@@ -310,7 +367,9 @@ BODY="$(build_body)"
 post_with_retries "$BODY" "primary"
 
 # --- extract content ------------------------------------------------------
-CONTENT="$(jq -r '.choices[0].message.content // ""' "$BODY_FILE" 2>/dev/null || true)"
+# post_with_retries already guarantees non-empty content on success; this is a
+# defensive re-check (and the single source of the extraction logic).
+CONTENT="$(extract_content)"
 [ -n "$CONTENT" ] || fail "HTTP 200 but response contained no message content"
 
 printf '%s' "$CONTENT" | strip_fences > "$CANDIDATE_FILE"
@@ -327,7 +386,7 @@ CORRECTION_PROMPT="Your previous reply was not valid JSON matching the required 
 BODY="$(build_body "$CONTENT" "$CORRECTION_PROMPT")"
 post_with_retries "$BODY" "correction"
 
-CONTENT="$(jq -r '.choices[0].message.content // ""' "$BODY_FILE" 2>/dev/null || true)"
+CONTENT="$(extract_content)"
 [ -n "$CONTENT" ] || fail "correction HTTP 200 but response contained no message content"
 
 printf '%s' "$CONTENT" | strip_fences > "$CANDIDATE_FILE"
