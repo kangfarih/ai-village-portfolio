@@ -1,0 +1,73 @@
+name: ci-smoke
+
+# Minimal smoke checks for PRs targeting dev.
+# Stub by design: shell + github context only, no gh auth required.
+on:
+  pull_request:
+    branches: [dev]
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: No parent-path escapes in SPEC
+        run: |
+          echo "Checking SPEC for '../../../' escapes..."
+          if grep -rF -- '../../../' SPEC/ 2>/dev/null; then
+            echo "::error::Found '../../../' escapes in SPEC/. Use repo-relative paths (SPEC/...)."
+            exit 1
+          fi
+          echo "OK: no escapes."
+
+      - name: node --check script.js
+        run: |
+          if [ -f script.js ]; then
+            node --check script.js
+            echo "OK: script.js parses."
+          else
+            echo "SKIP: script.js not present."
+          fi
+
+      - name: Secrets grep
+        run: |
+          echo "Scanning for secrets (keys, tokens, private keys, .env)..."
+          # Allowlist: this workflow file itself mentions these pattern names.
+          if grep -rEi --exclude-dir=.git --exclude-dir=node_modules \
+            -e 'AKIA[0-9A-Z]{16}' \
+            -e 'ghp_[A-Za-z0-9]{36}' \
+            -e 'github_pat_[A-Za-z0-9_]+' \
+            -e '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----' \
+            -e 'xox[bpas]-[A-Za-z0-9-]+' \
+            . ; then
+            echo "::error::Possible secret committed. Remove it and rotate."
+            exit 1
+          fi
+          if git diff --name-only "origin/${{ github.base_ref }}...HEAD" | grep -E '(^|/)\.env$|\.pem$|\.key$'; then
+            echo "::error::Blocked secret filename (.env/.pem/.key) in diff."
+            exit 1
+          fi
+          echo "OK: no secrets found."
+
+      - name: Diff size guard (<400 lines)
+        run: |
+          git fetch origin "${{ github.base_ref }}" --depth=1 || true
+          RANGE="origin/${{ github.base_ref }}...HEAD"
+          echo "Diff range: $RANGE"
+          ADDED=$(git diff --numstat "$RANGE" | awk '{a+=$1} END {print a+0}')
+          DELETED=$(git diff --numstat "$RANGE" | awk '{d+=$2} END {print d+0}')
+          TOTAL=$((ADDED + DELETED))
+          echo "Added=$ADDED Deleted=$DELETED Total=$TOTAL (limit 400)"
+          git diff --stat "$RANGE" || true
+          if [ "$TOTAL" -ge 400 ]; then
+            echo "::error::Diff is $TOTAL lines (>= 400). Split into <=400-line slices, one task per PR."
+            exit 1
+          fi
+          echo "OK: diff size within limit."

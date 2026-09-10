@@ -1,0 +1,61 @@
+name: Bug
+description: Bug report (PO triages, TL slices fix, programmer fixes on session/B-XXX branch)
+title: "[B-XXX] <short title>"
+labels: ["type: bug", "status:backlog"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is broken? Expected vs actual. Steps to reproduce via local run.
+      placeholder: |
+        Expected: CTA scrolls to contact section.
+        Actual: CTA does nothing on mobile.
+        Repro: python3 -m http.server, open page on mobile viewport, tap CTA.
+    validations:
+      required: true
+  - type: textarea
+    id: user-story
+    attributes:
+      label: User story
+      description: "Follow As / I want / So that format."
+      placeholder: |
+        As a visitor,
+        I want the CTA to work on mobile,
+        so that I can reach the contact section.
+    validations:
+      required: true
+  - type: textarea
+    id: ac
+    attributes:
+      label: Acceptance Criteria (AC)
+      description: Checkboxes, each verifiable via local run or on merged dev SHA.
+      placeholder: |
+        - [ ] CTA works on desktop and mobile viewport
+        - [ ] No console errors on local run
+    validations:
+      required: true
+  - type: input
+    id: spec-link
+    attributes:
+      label: SPEC link
+      description: "Repo-relative path once PO drafts it (e.g. SPEC/B-003-cta-fix.md). Leave blank if not yet written."
+      placeholder: "SPEC/B-XXX-<slug>.md"
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of the repo does this touch?
+      options:
+        - hero
+        - portfolio
+        - about/contact
+        - style/theme
+        - script/interaction
+        - docs/tooling
+        - other
+      default: 0
+    validations:
+      required: true

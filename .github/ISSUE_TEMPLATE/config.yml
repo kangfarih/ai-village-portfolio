@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: SPEC template
+    url: https://github.com/OWNER/REPO/blob/main/SPEC/_template.md
+    about: PO drafts SPEC from SPEC/_template.md; Issues stay GitHub-canonical, SPEC/TASKS.md is a mirror only.

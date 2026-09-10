@@ -1,0 +1,59 @@
+name: Feature
+description: New feature request (PO writes SPEC from this, TL slices to ≤400-line tasks)
+title: "[T-XXX] <short title>"
+labels: ["type: feature", "status:backlog"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem are we solving? Who is affected?
+      placeholder: "Example: Visitors cannot tell what the portfolio owner does within 5 seconds."
+    validations:
+      required: true
+  - type: textarea
+    id: user-story
+    attributes:
+      label: User story
+      description: "Follow As / I want / So that format."
+      placeholder: |
+        As a visitor,
+        I want to see a hero section with role + CTA,
+        so that I know what the owner does and how to contact them.
+    validations:
+      required: true
+  - type: textarea
+    id: ac
+    attributes:
+      label: Acceptance Criteria (AC)
+      description: Checkboxes, each verifiable via local run (python3 -m http.server) or on merged dev SHA.
+      placeholder: |
+        - [ ] Hero shows role + CTA on desktop and mobile
+        - [ ] CTA links to contact section
+        - [ ] No console errors on local run
+    validations:
+      required: true
+  - type: input
+    id: spec-link
+    attributes:
+      label: SPEC link
+      description: "Repo-relative path once PO drafts it (e.g. SPEC/T-010-hero.md). Leave blank if not yet written."
+      placeholder: "SPEC/T-XXX-<slug>.md"
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of the repo does this touch?
+      options:
+        - hero
+        - portfolio
+        - about/contact
+        - style/theme
+        - script/interaction
+        - docs/tooling
+        - other
+      default: 0
+    validations:
+      required: true
