@@ -1,0 +1,50 @@
+name: Test API Keys
+
+on:
+  workflow_dispatch:
+    inputs:
+      key_name:
+        description: 'Name/label for the key (e.g. openai, anthropic, opencode)'
+        required: true
+        default: opencode
+      api_key:
+        description: 'The API key value to test'
+        required: true
+      endpoint:
+        description: 'Provider health endpoint (without bearer auth)'
+        required: false
+        default: https://api.openai.com/v1/models
+
+jobs:
+  test-key:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Setup
+        run: |
+          echo "Testing key: ${{ inputs.key_name }}"
+
+      - name: Test API key
+        env:
+          API_KEY: ${{ inputs.api_key }}
+          ENDPOINT: ${{ inputs.endpoint }}
+        run: |
+          if [ -z "$API_KEY" ]; then
+            echo "::error ::API_KEY is empty"
+            exit 1
+          fi
+
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $API_KEY" "$ENDPOINT")
+          if [ "$RESPONSE" = "200" ]; then
+            echo "::notice ::✅ ${{ inputs.key_name }} key is VALID (HTTP 200)"
+            echo "::set-output name=result::PASS"
+          else
+            echo "::error ::❌ ${{ inputs.key_name }} key returned HTTP $RESPONSE"
+            echo "::set-output name=result::FAIL"
+          fi
+
+      - name: Summary
+        run: |
+          echo "Key test complete: ${{ steps.test-key.outputs.result }}"
