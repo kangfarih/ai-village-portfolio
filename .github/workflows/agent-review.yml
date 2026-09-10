@@ -86,7 +86,11 @@ jobs:
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_API_KEY_2: ${{ secrets.OPENROUTER_API_KEY_2 }}
+          OPENROUTER_API_KEY_3: ${{ secrets.OPENROUTER_API_KEY_3 }}
+          OPENROUTER_API_KEY_4: ${{ secrets.OPENROUTER_API_KEY_4 }}
+          OPENROUTER_API_KEY_5: ${{ secrets.OPENROUTER_API_KEY_5 }}
           MODEL: thinkingmachines/inkling:free
         run: |
           set -euo pipefail
@@ -217,9 +221,9 @@ jobs:
               exit 0
             fi
 
-            if [ -z "${OPENCODE_API_KEY:-}" ]; then
-              fail_human "**PO review cannot run:** \`OPENCODE_API_KEY\` is not configured. Add the secret, then re-apply \`goal/review\`. The goal was moved to \`needs-human\`."
-              echo "::error::OPENCODE_API_KEY is not configured"
+            if [ -z "${OPENROUTER_API_KEY:-}${OPENROUTER_API_KEY_2:-}${OPENROUTER_API_KEY_3:-}${OPENROUTER_API_KEY_4:-}${OPENROUTER_API_KEY_5:-}" ]; then
+              fail_human "**PO review cannot run:** \`OPENROUTER_API_KEY\` (or \`_2\`–\`_5\`) is not configured. Add the secret, then re-apply \`goal/review\`. The goal was moved to \`needs-human\`."
+              echo "::error::OPENROUTER_API_KEY (or _2.._5) is not configured"
               exit 1
             fi
 

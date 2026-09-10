@@ -11,7 +11,7 @@
 #               --schema '<JQ_BOOL_FILTER>' [--effort low|medium|high] [--max-tokens N]
 #
 # Env:
-#   OPENCODE_API_KEY      (required) bearer token; never logged
+#   OPENROUTER_API_KEY[_2.._5]  (>=1 required) bearer tokens, tried in order; rotate on 401/402/403 or transport exhaustion; never logged
 #   MODEL                 default thinkingmachines/inkling:free
 #   OPENROUTER_ENDPOINT   default https://openrouter.ai/api/v1/chat/completions
 #   LLM_MAX_ATTEMPTS      default 3
@@ -79,7 +79,13 @@ case "$EFFORT_ARG" in
   *) fail "--effort must be one of: low, medium, high" ;;
 esac
 
-[ -n "${OPENCODE_API_KEY:-}" ] || fail "OPENCODE_API_KEY is not set"
+KEYS=()
+for _k in OPENROUTER_API_KEY OPENROUTER_API_KEY_2 OPENROUTER_API_KEY_3 OPENROUTER_API_KEY_4 OPENROUTER_API_KEY_5; do
+  _v="${!_k:-}"
+  [ -n "$_v" ] && KEYS+=("$_v")
+done
+unset _k _v
+[ "${#KEYS[@]}" -gt 0 ] || fail "no API key configured (set OPENROUTER_API_KEY, optionally _2.._5)"
 
 MODEL="${MODEL:-thinkingmachines/inkling:free}"
 ENDPOINT="${OPENROUTER_ENDPOINT:-https://openrouter.ai/api/v1/chat/completions}"
@@ -135,10 +141,10 @@ build_body() {
 # POST the body; capture HTTP code into HTTP_CODE. No --fail-with-body: the
 # code and body are both needed for retry/validation decisions.
 post() {
-  local body="$1"
+  local body="$1" key="$2"
   HTTP_CODE="$(curl -sS -D "$HDR_FILE" -o "$BODY_FILE" -w '%{http_code}' \
     -X POST "$ENDPOINT" \
-    -H "Authorization: Bearer $OPENCODE_API_KEY" \
+    -H "Authorization: Bearer $key" \
     -H "Content-Type: application/json" \
     -d "$body" || true)"
   HTTP_CODE="${HTTP_CODE:-000}"
@@ -147,6 +153,13 @@ post() {
 is_transport() {
   case "${1:-}" in
     000|429|500|502|503|504) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_key_failure() {
+  case "${1:-}" in
+    401|402|403) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -190,38 +203,52 @@ retry_after() {
   printf '%s' "$ra"
 }
 
-# Transport retry helper: POST $1 with jittered backoff / Retry-After, returning
-# 0 only on HTTP 200. Used for BOTH the primary call and the single semantic
-# correction, so a 429/5xx on the correction backs off/retries like the primary.
-# $2 = phase label for diagnostics. Non-retryable or exhausted transport fails
-# loudly via fail().
+# Transport retry + key rotation helper: POST $1 with jittered backoff /
+# Retry-After on transport failures, rotating to the next configured key on an
+# auth/credit failure (401/402/403) or once a key's transport retries are
+# exhausted. Returns 0 only on HTTP 200. Used for BOTH the primary call and the
+# single semantic correction. A non-retryable, non-key HTTP code (e.g. 400/404/
+# 422) fails loudly without rotating: the request/model is wrong, not the key.
+# $2 = phase label for diagnostics. The key VALUE is never logged; only the key
+# index (ki/N) and HTTP codes.
 post_with_retries() {
   local body="$1" phase="${2:-primary}"
-  local attempt=1
-  while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
-    post "$body"
-    if [ "$HTTP_CODE" = "200" ]; then
-      echo "llm_json: HTTP 200 (${phase}) on attempt ${attempt}/${MAX_ATTEMPTS}" >&2
-      return 0
-    fi
-    if is_transport "$HTTP_CODE"; then
-      if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
-        local delay
-        delay="$(retry_after)"
-        if [ -n "$delay" ]; then
-          echo "llm_json: HTTP ${HTTP_CODE} (${phase}); honoring Retry-After=${delay}s (attempt ${attempt}/${MAX_ATTEMPTS})" >&2
-        else
-          delay="$(backoff_for $(( attempt - 1 )))"
-          echo "llm_json: transport HTTP ${HTTP_CODE} (${phase}); backoff ${delay}s before attempt $(( attempt + 1 ))/${MAX_ATTEMPTS}" >&2
-        fi
-        sleep "$delay"
-        attempt=$(( attempt + 1 ))
-        continue
+  local n="${#KEYS[@]}"
+  local ki=0 key
+  for key in "${KEYS[@]}"; do
+    ki=$(( ki + 1 ))
+    local attempt=1
+    while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
+      post "$body" "$key"
+      if [ "$HTTP_CODE" = "200" ]; then
+        echo "llm_json: HTTP 200 (${phase}) on key ${ki}/${n}, attempt ${attempt}/${MAX_ATTEMPTS}" >&2
+        return 0
       fi
-      fail "transport failure HTTP ${HTTP_CODE} (${phase}) after ${attempt} attempt(s)"
-    fi
-    fail "HTTP ${HTTP_CODE} is not retryable (${phase}, attempt ${attempt}/${MAX_ATTEMPTS})"
+      if is_key_failure "$HTTP_CODE"; then
+        echo "llm_json: key ${ki}/${n} rejected HTTP ${HTTP_CODE}; rotating (${phase})" >&2
+        break
+      fi
+      if is_transport "$HTTP_CODE"; then
+        if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+          local delay
+          delay="$(retry_after)"
+          if [ -n "$delay" ]; then
+            echo "llm_json: HTTP ${HTTP_CODE} (${phase}) on key ${ki}/${n}; honoring Retry-After=${delay}s (attempt ${attempt}/${MAX_ATTEMPTS})" >&2
+          else
+            delay="$(backoff_for $(( attempt - 1 )))"
+            echo "llm_json: transport HTTP ${HTTP_CODE} (${phase}) on key ${ki}/${n}; backoff ${delay}s before attempt $(( attempt + 1 ))/${MAX_ATTEMPTS}" >&2
+          fi
+          sleep "$delay"
+          attempt=$(( attempt + 1 ))
+          continue
+        fi
+        echo "llm_json: key ${ki}/${n} transport exhausted (HTTP ${HTTP_CODE}, ${phase}) after ${attempt} attempt(s); rotating" >&2
+        break
+      fi
+      fail "HTTP ${HTTP_CODE} is not retryable (${phase}, attempt ${attempt}/${MAX_ATTEMPTS})"
+    done
   done
+  fail "all ${n} API key(s) failed on ${phase}"
 }
 
 # Atomically write the schema-validated candidate to --out.

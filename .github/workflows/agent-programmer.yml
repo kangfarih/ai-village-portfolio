@@ -75,7 +75,11 @@ jobs:
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_API_KEY_2: ${{ secrets.OPENROUTER_API_KEY_2 }}
+          OPENROUTER_API_KEY_3: ${{ secrets.OPENROUTER_API_KEY_3 }}
+          OPENROUTER_API_KEY_4: ${{ secrets.OPENROUTER_API_KEY_4 }}
+          OPENROUTER_API_KEY_5: ${{ secrets.OPENROUTER_API_KEY_5 }}
           MODEL: thinkingmachines/inkling:free
           # Complete file contents need a large completion budget; the helper's
           # 1500 default truncates real changesets. Override with the repo
@@ -155,9 +159,9 @@ jobs:
             exit 0
           fi
 
-          if [ -z "${OPENCODE_API_KEY:-}" ]; then
-            fail_human "**Programmer cannot run:** \`OPENCODE_API_KEY\` is not configured. Add the secret, then re-run by re-applying \`goal/ready\`. The goal was moved to \`needs-human\`."
-            echo "::error::OPENCODE_API_KEY is not configured"
+          if [ -z "${OPENROUTER_API_KEY:-}${OPENROUTER_API_KEY_2:-}${OPENROUTER_API_KEY_3:-}${OPENROUTER_API_KEY_4:-}${OPENROUTER_API_KEY_5:-}" ]; then
+            fail_human "**Programmer cannot run:** \`OPENROUTER_API_KEY\` (or \`_2\`–\`_5\`) is not configured. Add the secret, then re-run by re-applying \`goal/ready\`. The goal was moved to \`needs-human\`."
+            echo "::error::OPENROUTER_API_KEY (or _2.._5) is not configured"
             exit 1
           fi
 

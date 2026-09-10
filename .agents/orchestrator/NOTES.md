@@ -1865,3 +1865,47 @@ never push `dev`/`main`, never force-push, and never merge.
 - **W7 leaves `TL_SCHEMA` permissive.** A non-code `tl:v1` is caught by the guard
   (friendly message) rather than by the schema; intentionally unchanged so the
   failure names the kind.
+
+## Auth change: OpenRouter key rotation (OPENROUTER_API_KEY[_2.._5])
+
+`OPENCODE_API_KEY` is no longer used anywhere in the agentic loop. Auth now uses
+up to five OpenRouter bearer tokens — `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2`
+… `OPENROUTER_API_KEY_5` — collected in that order by
+`.github/scripts/llm_json.sh` and passed per-POST so no global secret is in scope
+at curl time.
+
+Rotation rules implemented in `post_with_retries BODY PHASE`:
+- HTTP 200 → success; logs the key index (`ki/N`) and attempt, never the value.
+- HTTP 401/402/403 (`is_key_failure`) → log "rejected HTTP <code>; rotating" and
+  move to the next configured key.
+- Transport failures (000/429/500/502/503/504) → retry the SAME key with the
+  existing jittered backoff / capped Retry-After; once its attempts are
+  exhausted, log and rotate to the next key.
+- Any other non-200 (400/404/422, …) → `fail` immediately WITHOUT rotating: the
+  request/model is wrong, not the key.
+- No key configured at all → `fail "no API key configured ..."`.
+- No key succeeds → `fail "all <N> API key(s) failed on <phase>"`.
+
+Model stays `thinkingmachines/inkling:free`; endpoint stays the OpenRouter
+default `https://openrouter.ai/api/v1/chat/completions`. The five workflows
+(`agent-orchestrate`, `agent-techlead`, `agent-programmer`, `agent-review`,
+`agent-triage`) now pass all five secrets in their `env:` blocks, and the
+pre-flight guards fail unless at least one is set (triage has no guard and stays
+non-fatal). `STATE-MACHINE.md` never named `OPENCODE_API_KEY`, so it was
+unchanged.
+
+### Verification
+- `bash -n .github/scripts/llm_json.sh` → OK; script remains mode `0755`.
+- `ruby -ryaml -e 'YAML.load_file(...)'` for all 5 changed workflows → OK.
+- `bash -n` on every extracted `run:` block (23 blocks) → all OK.
+- Rotation unit tests with a fake `curl` (23 assertions, all pass):
+  1. key1 401 → key2 200 → exit 0, uses key 2/2.
+  2. key1 402 → key2 403 → key3 200 → exit 0, uses key 3/3.
+  3. all five 401 → exit 1, "all 5 API key(s) failed on primary".
+  4. key1 500×3 (transport exhausted) → key2 200 → exit 0.
+  5. key1 400 → exit 1 without trying key2 (non-rotatable).
+  6. only `OPENROUTER_API_KEY_4` set → used directly (key 1/1).
+  7. no dummy key value appears in stdout/stderr.
+- `git diff --stat` → only the 6 allowed code/workflow paths (+ this NOTES.md).
+
+Commit: `<SHA>`; push: `<RESULT>`.
