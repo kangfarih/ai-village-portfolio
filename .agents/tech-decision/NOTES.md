@@ -1,5 +1,7 @@
 # Analysis Notes
 
+Committed tech stack analysis templates (NOTES.md + REQUIREMENTS.md) for 2D RPG portfolio.
+
 ## Analysis Date
 <!-- YYYY-MM-DD -->
 
