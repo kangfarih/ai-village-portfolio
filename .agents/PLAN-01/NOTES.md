@@ -167,3 +167,11 @@ gh api repos/kangfarih/ai-village-portfolio/branches/dev/protection --jq '{requi
 Alternative (no `gh`): GitHub web → Settings → Branches → Add classic branch protection rule → Branch name pattern `dev` → check `Require a pull request before merging` (required approvals = 1, dismiss stale reviews) + `Require status checks to pass before merging` (select `smoke`, `branch-lint`, require branches up to date) + `Do not allow bypassing the above settings`.
 
 After this, agent workflow unblocks: session branches PR → `dev`, human sole merger, qa-tester verifies merged `dev` SHA.
+
+---
+
+## 2026-09-10 — Committed + pushed workflow scaffold (commit a643257)
+
+- Commit: `a6432575c15ae99774bd6fbabdc7921deed5b1c1` on `main` — `feat(workflow): PO-TL-Programmer loop + agents + GitHub scaffold` (18 files: 6 `.agents/`, 6 `.github/`, 3 SPEC mods, TASKS.md→SPEC/TASKS.md rename, PHASE1_PLAN.md/PLANNING.md deletions).
+- Push: `git push origin main` → `1c837c5..a643257 main -> main` OK (no force, no PR, no merge).
+- Left uncommitted (out of scope): SPEC/IDEAS + PENDING + README + T-007-pilot mods, `.opencode/` (legacy agent + ignored node_modules).

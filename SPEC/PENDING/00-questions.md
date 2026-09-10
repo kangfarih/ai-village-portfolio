@@ -12,14 +12,14 @@
 
 ## Q2 — Scope: 6 buildings only, vs +Blacksmith/Well in Phase 1?
 
-- Context: `../../PHASE1_PLAN.md` adds Blacksmith + Well buildings in Weeks 1-2;
+- Context: `./03-phase1-and-vision.md` adds Blacksmith + Well buildings in Weeks 1-2;
   current map scope otherwise covers the existing buildings.
 - Options: (a) keep the existing 6 buildings only for MVP; (b) include Blacksmith/Well in Phase 1.
 - Unblocks: T-013 map scope and T-007/README building list.
 
 ## Q3 — Directions: L/R-flip 2-dir sprite scheme OK?
 
-- Context: Zerie sprite plan flips left/right frames; `../../PHASE1_PLAN.md` lists Idle/Walk
+- Context: Zerie sprite plan flips left/right frames; `./03-phase1-and-vision.md` lists Idle/Walk
   (left/right via flip), Attack, Hurt, Death. T-011 animation depends on this.
 - Options: (a) accept 2-dir L/R-flip; (b) require fuller directional sets.
 - Unblocks: T-010 asset wiring + T-011 animation SPEC.
@@ -34,7 +34,7 @@
 ## Q5 — Assets: Zerie credit footer + no new binaries + URL-encode paths?
 
 - Context: Zerie pack allows personal/commercial use, credit appreciated but not required
-  (`../../PHASE1_PLAN.md` Notes). T-010 includes `ATTRIBUTION.md`, URL-encoded paths, CSS fallback.
+  (`./03-phase1-and-vision.md` Notes). T-010 includes `ATTRIBUTION.md`, URL-encoded paths, CSS fallback.
 - Options: (a) confirm credit footer + no new binaries + URL-encoded paths; (b) different terms.
 - Unblocks: T-010 asset SPEC (blocked until licensing/attribution is settled).
 

@@ -1,13 +1,24 @@
 name: branch-lint
 
+# Empty default: jobs declare their own least-privilege permissions below.
+permissions: {}
+
 # Enforce session-branch convention + dev base. No gh auth required.
 on:
   pull_request:
     branches: [dev]
 
+concurrency:
+  group: branch-lint-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - name: Check head/base naming
         run: |

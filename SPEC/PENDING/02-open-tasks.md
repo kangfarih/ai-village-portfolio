@@ -1,6 +1,6 @@
 # PENDING 02 — Open / Blocked Tasks (AWAITING ORDER)
 
-> Status: **AWAITING ORDER.** Source: root `../../../TASKS.md` Backlog + Blocked. Not cleared for execution.
+> Status: **AWAITING ORDER.** Source: root `../TASKS.md` Backlog + Blocked. Not cleared for execution.
 
 ## T-002 — Branch bootstrap (blocked: remote URL)
 

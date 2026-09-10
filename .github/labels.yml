@@ -1,0 +1,15 @@
+# Label reference for this repo (manual setup — no label-sync Action).
+# Create missing labels via Settings > Labels or `gh label create`.
+# Colors are hex without leading `#`.
+- name: ai-triage
+  color: "0E8A16"
+  description: "Opt-in to opencode triage"
+- name: "type: feature"
+  color: "1D76DB"
+  description: "New feature request (see feature.yml)"
+- name: "type: bug"
+  color: "D73A4A"
+  description: "Bug report (see bug.yml)"
+- name: "status:backlog"
+  color: "EDEDED"
+  description: "Triaged, waiting to be sliced/approved"
