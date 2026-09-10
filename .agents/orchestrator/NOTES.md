@@ -1391,7 +1391,8 @@ is not changed here.
   - `.github/workflows/ci-smoke.yml`
   - `.agents/orchestrator/NOTES.md` (this section)
 - Push: `git push origin dev` (no `-i`, no `--force`, no `--no-verify`).
-- Commit SHA + push result: `<recorded post-push>` — `git push origin dev` OK.
+- Commit SHA + push result: `f0bfc0b` — `git push origin dev` OK
+  (`8ec6cbe..f0bfc0b  dev -> dev`).
   This notes-record entry is a second, notes-only commit recording the SHA
   (its own SHA is recorded post-push, not invented here).
 
