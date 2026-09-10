@@ -5,15 +5,17 @@ permissions: {}
 
 # PO review role: `goal/review` -> LLM verdict against the goal + the TL's
 # acceptance criteria -> `<!-- verdict:v1 -->` comment -> `goal/done` (pass) or
-# `goal/revise` (attempt+1, re-enter the TL). Exceeding MAX_REVISE escalates to
-# `needs-human`. A `done` verdict can also terminate the parent
+# a revise verdict re-entering at `goal/tl` directly (attempt+1, the TL is
+# re-dispatched). There is no `goal/revise` label. Exceeding MAX_REVISE escalates
+# to `needs-human`. A `done` verdict can also terminate the parent
 # (`status:done` + `<!-- parent-done:v1 -->`) and open the ONE human-gated PR
 # `issue/<parent#>` -> `dev`; the agent NEVER merges it and NEVER pushes
 # `dev`/`main`. The parent is never auto-closed.
 # Fires when the Programmer adds the `goal/review` label to a goal issue.
 # Uses GITHUB_TOKEN with `issues: write` + `pull-requests: write` (the single
-# final PR) + `actions: write` (to dispatch the next role). No `contents: write`
-# and no merge/push steps.
+# final PR) + `actions: write` (to dispatch the next role). No `contents: write`;
+# branch existence / `ahead_by` / file checks use a read-only git fetch (the
+# read-only token can still fetch), and there are no merge/push steps.
 # Config/LLM errors are LOUD (issue comment + non-zero exit) — no fallback.
 #
 # Chaining: a `GITHUB_TOKEN`-made `goal/tl` label does not start a new run, so a
@@ -32,11 +34,13 @@ on:
 jobs:
   review:
     # Run if the `goal/review` label is present and the trigger is human/agent,
-    # or on an explicit dispatch from the Programmer.
+    # or on an explicit dispatch from the Programmer. The issue MAY be authored
+    # by `GITHUB_TOKEN` (Bot): goal issues are Bot-authored, so the documented
+    # human label-recovery path must not be blocked by the issue author. Only the
+    # event SENDER is guarded against bots.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (contains(github.event.issue.labels.*.name, 'goal/review') &&
-       github.event.issue.user.type != 'Bot' &&
        github.event.sender.type != 'Bot')
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -53,10 +57,14 @@ jobs:
       MAX_REVISE: "3"
 
     steps:
+      # Full history + persisted credentials so the read-only token can
+      # `git fetch` `dev` / `issue/<parent#>` for the branch/ahead/file checks
+      # (replaces the unencoded-slash `compare` API call). The token stays
+      # read-only: this job has no `contents: write` and never pushes.
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 1
-          persist-credentials: false
+          fetch-depth: 0
+          persist-credentials: true
 
       # Agent is now pure GitHub workflow agent; model = thinkingmachines/inkling:free.
       - name: Document pure GitHub workflow agent
@@ -69,7 +77,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh label create "goal/done" --color "0E8A16" --description "Goal done (terminal)" 2>/dev/null || true
-          gh label create "goal/revise" --color "D93F0B" --description "PO requested a revision" 2>/dev/null || true
           gh label create "goal/tl" --color "FBCA04" --description "Tech-lead decomposition in progress" 2>/dev/null || true
           gh label create "goal/review" --color "5319E7" --description "Goal awaiting PO verdict" 2>/dev/null || true
           gh label create "needs-human" --color "B60205" --description "Automation blocked; human needed" 2>/dev/null || true
@@ -103,8 +110,6 @@ jobs:
             exit "$code"
           }
           trap on_error ERR
-
-          REPO="${{ github.repository }}"
 
           # Revision counter: last `<!-- attempts:N -->` marker, default 0.
           ATTEMPT="$(gh issue view "$ISSUE_NUMBER" --json comments --jq '[.comments[].body] | join("\n")' | sed -n 's/.*<!-- attempts:\([0-9]*\) -->.*/\1/p' | tail -n1)"
@@ -160,6 +165,26 @@ jobs:
             exit 1
           fi
 
+          # The integration branch comes from the result, falling back to the
+          # goal's parent branch. Resolve it ONCE so the file check, the ahead
+          # count, the review prompt, and the parent termination all render the
+          # same branch (N5).
+          INTEGRATION="$(printf '%s' "$RESULT_JSON" | jq -r '.integration_branch // ""')"
+          if [ -z "$INTEGRATION" ] && [ -n "$PARENT_NUMBER" ]; then
+            INTEGRATION="issue/${PARENT_NUMBER}"
+          fi
+
+          # Refresh refs with git (the read-only token can still fetch). A
+          # transport/auth failure here is LOUD via the ERR trap — it is never
+          # silently read as "ahead 0". Branch ABSENCE is a distinct, expected
+          # state (`ls-remote --exit-code` fails) and is handled as "no branch".
+          git fetch --no-tags origin dev
+          INTEGRATION_PRESENT="false"
+          if [ -n "$INTEGRATION" ] && git ls-remote --exit-code --heads origin "refs/heads/${INTEGRATION}" >/dev/null 2>&1; then
+            INTEGRATION_PRESENT="true"
+            git fetch --no-tags origin "refs/heads/${INTEGRATION}:refs/remotes/origin/${INTEGRATION}"
+          fi
+
           # Idempotency: a verdict:v1 payload for THIS attempt already exists, so
           # skip the LLM and only (re)apply the stored verdict's transition.
           VRAW="$(gh issue view "$ISSUE_NUMBER" --json comments --jq '[.comments[].body] | map(select(contains("<!-- verdict:v1 -->"))) | last // ""')"
@@ -170,21 +195,26 @@ jobs:
             echo "verdict:v1 payload for attempt ${ATTEMPT} already present; skipping LLM"
             VERDICT="$(printf '%s' "$VERDICT_JSON" | jq -r '.verdict')"
           else
+            # W2: the latest result:v1 must belong to THIS attempt. A queued or
+            # duplicate dispatch arriving after a revise advanced the counter
+            # carries a stale result; reviewing it would burn a revision. No LLM,
+            # no label change, no marker: log and exit 0 (idempotent no-op).
+            RESULT_ATTEMPT="$(printf '%s' "$RESULT_JSON" | jq -r '.attempt')"
+            if [ "$RESULT_ATTEMPT" != "$ATTEMPT" ]; then
+              echo "not ready for this attempt: latest result:v1 has attempt ${RESULT_ATTEMPT}, expected ${ATTEMPT}; no review performed"
+              echo "::notice::agent-review no-op: result:v1 attempt ${RESULT_ATTEMPT} != current attempt ${ATTEMPT}"
+              exit 0
+            fi
+
             if [ -z "${OPENCODE_API_KEY:-}" ]; then
               fail_human "**PO review cannot run:** \`OPENCODE_API_KEY\` is not configured. Add the secret, then re-apply \`goal/review\`. The goal was moved to \`needs-human\`."
               echo "::error::OPENCODE_API_KEY is not configured"
               exit 1
             fi
 
-            # --- Mechanical file verification (no git auth) -------------------
-            # The integration branch comes from the result, falling back to the
-            # goal's parent branch. Every declared path is checked on the branch
-            # via the contents API; a MISSING required file can never be `done`.
-            INTEGRATION="$(printf '%s' "$RESULT_JSON" | jq -r '.integration_branch // ""')"
-            if [ -z "$INTEGRATION" ] && [ -n "$PARENT_NUMBER" ]; then
-              INTEGRATION="issue/${PARENT_NUMBER}"
-            fi
-
+            # --- Mechanical file verification (git; no API) -------------------
+            # Every declared path is checked on the integration branch via
+            # `git cat-file -e`; a MISSING required file can never be `done`.
             FILE_EVIDENCE=""
             MISSING_ANY="false"
             if [ -n "$INTEGRATION" ]; then
@@ -192,8 +222,7 @@ jobs:
               if [ "$FILE_TOTAL" -gt 0 ]; then
                 while IFS= read -r FPATH; do
                   [ -n "$FPATH" ] || continue
-                  FSHA="$(gh api "repos/${REPO}/contents/${FPATH}?ref=${INTEGRATION}" --jq '.sha' 2>/dev/null || true)"
-                  if [ -n "$FSHA" ]; then
+                  if [ "$INTEGRATION_PRESENT" = "true" ] && git cat-file -e "origin/${INTEGRATION}:${FPATH}" 2>/dev/null; then
                     FILE_EVIDENCE="${FILE_EVIDENCE}${FPATH}=present"$'\n'
                   else
                     FILE_EVIDENCE="${FILE_EVIDENCE}${FPATH}=MISSING"$'\n'
@@ -209,7 +238,9 @@ jobs:
             fi
 
             # Integration branch vs `dev`: how far ahead the parent PR would be.
-            AHEAD_BY="$(gh api "repos/${REPO}/compare/dev...${INTEGRATION}" --jq '.ahead_by' 2>/dev/null || echo 0)"
+            # `origin/dev` and `origin/<integration>` were fetched above; a missing
+            # branch has no `origin/<integration>` ref and reads as 0.
+            AHEAD_BY="$(git rev-list --count "origin/dev..origin/${INTEGRATION}" 2>/dev/null || echo 0)"
             AHEAD_BY="${AHEAD_BY:-0}"
 
             FILE_NOTE="All declared files are present on ${INTEGRATION}."
@@ -231,12 +262,13 @@ jobs:
               --arg file_evidence "$FILE_EVIDENCE" \
               --arg file_note "$FILE_NOTE" \
               --arg ahead_by "$AHEAD_BY" \
+              --arg integration "$INTEGRATION" \
               -r '"GOAL: " + $title + "\n\n" + $body
                   + "\n\nPARENT: " + $parent_title + "\n\n" + $parent_body
                   + "\n\nSPEC (objective + acceptance):\n" + ($spec | tojson)
                   + "\n\nACCEPTANCE:\n" + (($spec.acceptance // []) | tojson)
                   + "\n\nPROGRAMMER RESULT:\n" + ($result | tojson)
-                  + "\n\nMECHANICAL FILE CHECK on " + ($result.integration_branch // "issue/<unknown>") + ":\n" + $file_evidence
+                  + "\n\nMECHANICAL FILE CHECK on " + $integration + ":\n" + $file_evidence
                   + "\n" + $file_note
                   + "\nIntegration branch is ahead of dev by " + $ahead_by + " commit(s)."' > /tmp/review_user.txt
 
@@ -298,6 +330,8 @@ jobs:
           # Parent termination: runs only after a `done` verdict. On completion it
           # opens the ONE human-gated PR issue/<parent#> -> dev (when the branch is
           # ahead) and marks the parent `status:done` + `<!-- parent-done:v1 -->`.
+          # PR creation is tolerant/idempotent: two reviews finishing at once
+          # cannot duplicate the PR or hard-fail on the loser.
           if [ "$VERDICT" = "done" ] && [ -n "$PARENT_NUMBER" ]; then
             # Idempotent: skip if already marked or already `status:done`.
             PMARK="$(gh issue view "$PARENT_NUMBER" --json comments --jq '[.comments[].body] | join("\n") | contains("<!-- parent-done:v1 -->")')"
@@ -305,26 +339,37 @@ jobs:
             if [ "$PMARK" = "true" ] || [ "$PSTATUS" = "true" ]; then
               echo "parent #${PARENT_NUMBER} already marked done; skipping"
             else
-              # A failed child lookup is LOUD (no `|| true`); an empty result is
-              # never treated as "no children". Failure trips the ERR trap.
-              CHILDREN_JSON="$(gh issue list --label ai-goal --state all \
-                --search "in:title \"from #${PARENT_NUMBER}\"" \
+              # Children of THIS parent only: REST-backed list (never the search
+              # API, whose index can lag) filtered locally by exact title suffix. A
+              # failed lookup is LOUD (no `|| true`); an empty result is never
+              # treated as "no children". Failure trips the ERR trap.
+              CHILDREN_JSON="$(gh issue list --label ai-goal --state all --limit 200 \
                 --json number,title,url,labels)"
+              CHILDREN_JSON="$(printf '%s' "$CHILDREN_JSON" | jq --arg suffix "(from #${PARENT_NUMBER})" \
+                '[.[] | select(.title | endswith($suffix))]')"
               COMPLETE="$(printf '%s' "$CHILDREN_JSON" | jq 'length > 0 and all(.[]; ([.labels[].name] | contains(["goal/done"])))')"
               if [ "$COMPLETE" = "true" ]; then
                 # The single integration branch + how far ahead of dev it is.
-                # A missing branch (or a failed compare) reads as 0 -> no PR.
+                # Reuse the git refs already fetched for the goal; a missing
+                # branch reads as 0 -> no PR. A fetch error is LOUD (ERR trap).
                 PINTEGRATION="issue/${PARENT_NUMBER}"
-                PAHEAD_BY="$(gh api "repos/${REPO}/compare/dev...${PINTEGRATION}" --jq '.ahead_by' 2>/dev/null || echo 0)"
+                PINTEGRATION_PRESENT="false"
+                if git ls-remote --exit-code --heads origin "refs/heads/${PINTEGRATION}" >/dev/null 2>&1; then
+                  PINTEGRATION_PRESENT="true"
+                  git fetch --no-tags origin "refs/heads/${PINTEGRATION}:refs/remotes/origin/${PINTEGRATION}"
+                fi
+                PAHEAD_BY=0
+                if [ "$PINTEGRATION_PRESENT" = "true" ]; then
+                  PAHEAD_BY="$(git rev-list --count "origin/dev..origin/${PINTEGRATION}" 2>/dev/null || echo 0)"
+                fi
                 PAHEAD_BY="${PAHEAD_BY:-0}"
 
                 PR_URL=""
                 NOCHANGES=""
                 if [ "$PAHEAD_BY" -gt 0 ] 2>/dev/null; then
                   # Idempotency: reuse an open PR for the same head, else open ONE.
-                  EXISTING_PR="$(gh pr list --head "${PINTEGRATION}" --state open --json number,url --jq '.[0].number // empty')"
-                  if [ -n "$EXISTING_PR" ]; then
-                    PR_URL="$(gh pr list --head "${PINTEGRATION}" --state open --json number,url --jq '.[0].url')"
+                  PR_URL="$(gh pr list --head "${PINTEGRATION}" --state open --json number,url --jq '.[0].url // empty')"
+                  if [ -n "$PR_URL" ]; then
                     echo "existing open PR for ${PINTEGRATION}: ${PR_URL}"
                   else
                     PR_BODY="$( {
@@ -334,32 +379,54 @@ jobs:
                       printf '%s' "$CHILDREN_JSON" | jq -r '.[] | "- #" + (.number|tostring) + " " + .title + " - " + .url'
                       printf '\nHuman review required; the agent will not merge. Do not merge until reviewed.\n'
                     } )"
-                    PR_URL="$(gh pr create --base dev --head "${PINTEGRATION}" \
-                      --title "[Issue #${PARENT_NUMBER}] ${PARENT_TITLE}" \
-                      --body "$PR_BODY")"
-                    echo "opened final PR ${PINTEGRATION} -> dev: ${PR_URL}"
+                    # Tolerant create: a racing review may have opened the PR
+                    # first, so a failed create re-lists and reuses the winner.
+                    if PR_URL="$(gh pr create --base dev --head "${PINTEGRATION}" \
+                        --title "[Issue #${PARENT_NUMBER}] ${PARENT_TITLE}" \
+                        --body "$PR_BODY" 2>/tmp/pr_create_err)"; then
+                      echo "opened final PR ${PINTEGRATION} -> dev: ${PR_URL}"
+                    else
+                      PR_URL="$(gh pr list --head "${PINTEGRATION}" --state open --json number,url --jq '.[0].url // empty')"
+                      if [ -n "$PR_URL" ]; then
+                        echo "PR already opened by a racing review for ${PINTEGRATION}: ${PR_URL}"
+                      else
+                        cat /tmp/pr_create_err >&2
+                        echo "::error::gh pr create failed for ${PINTEGRATION} and no open PR now exists"
+                        false
+                      fi
+                    fi
                   fi
                 else
                   NOCHANGES="Integration branch \`${PINTEGRATION}\` is missing or has no commits ahead of \`dev\`; no changes to propose."
                   echo "$NOCHANGES"
                 fi
 
-                {
-                  printf '<!-- parent-done:v1 -->\n'
-                  printf 'All goals for this parent are `goal/done`.\n\n'
-                  printf 'Goal list:\n\n'
-                  printf '%s' "$CHILDREN_JSON" | jq -r '.[] | "- #" + (.number|tostring) + " " + .title + " - " + .url'
-                  printf '\n'
-                  if [ -n "$PR_URL" ]; then
-                    printf 'Final integration PR `%s` -> `dev`: %s\n\n' "$PINTEGRATION" "$PR_URL"
-                  else
-                    printf '%s\n\n' "$NOCHANGES"
-                  fi
-                  printf 'Human review required; the agent will not merge. Do not merge until reviewed.\n'
-                  printf 'Agents never merge and never push `dev`/`main`.\n\n'
-                  printf 'Parent status: `status:done`. This issue is NOT auto-closed - a human closes it.\n\n'
-                  printf 'Agent: pure GitHub workflow agent | Model: thinkingmachines/inkling:free\n'
-                } | gh issue comment "$PARENT_NUMBER" --body-file -
+                # Re-check the marker AND `status:done` immediately before
+                # finalizing (B4): a racing review may have marked the parent
+                # while we opened the PR.
+                PMARK="$(gh issue view "$PARENT_NUMBER" --json comments --jq '[.comments[].body] | join("\n") | contains("<!-- parent-done:v1 -->")')"
+                PSTATUS="$(gh issue view "$PARENT_NUMBER" --json labels --jq '[.labels[].name] | contains(["status:done"])')"
+                if [ "$PMARK" != "true" ] && [ "$PSTATUS" != "true" ]; then
+                  {
+                    printf '<!-- parent-done:v1 -->\n'
+                    printf 'All goals for this parent are `goal/done`.\n\n'
+                    printf 'Goal list:\n\n'
+                    printf '%s' "$CHILDREN_JSON" | jq -r '.[] | "- #" + (.number|tostring) + " " + .title + " - " + .url'
+                    printf '\n'
+                    if [ -n "$PR_URL" ]; then
+                      printf 'Final integration PR `%s` -> `dev`: %s\n\n' "$PINTEGRATION" "$PR_URL"
+                    else
+                      printf '%s\n\n' "$NOCHANGES"
+                    fi
+                    printf 'Human review required; the agent will not merge. Do not merge until reviewed.\n'
+                    printf 'Agents never merge and never push `dev`/`main`.\n\n'
+                    printf 'Parent status: `status:done`. This issue is NOT auto-closed - a human closes it.\n\n'
+                    printf 'Agent: pure GitHub workflow agent | Model: thinkingmachines/inkling:free\n'
+                  } | gh issue comment "$PARENT_NUMBER" --body-file -
+                else
+                  echo "parent #${PARENT_NUMBER} was finalized by a racing review; not posting a duplicate"
+                fi
+                # Idempotent: adding an already-present label is a no-op.
                 gh issue edit "$PARENT_NUMBER" --add-label "status:done"
               else
                 echo "not all goals of parent #${PARENT_NUMBER} are goal/done; leaving the parent open"

@@ -72,7 +72,6 @@ jobs:
           gh label create "goal/building" --color "1D76DB" --description "Programmer building the goal" 2>/dev/null || true
           gh label create "goal/review" --color "5319E7" --description "Goal awaiting PO verdict" 2>/dev/null || true
           gh label create "goal/done" --color "0E8A16" --description "Goal done (terminal)" 2>/dev/null || true
-          gh label create "goal/revise" --color "D93F0B" --description "PO requested a revision" 2>/dev/null || true
           gh label create "needs-human" --color "B60205" --description "Automation blocked; human needed" 2>/dev/null || true
           gh label create "status:done" --color "0E8A16" --description "Parent issue complete" 2>/dev/null || true
 
@@ -170,9 +169,15 @@ jobs:
           # Individual-title dedupe: fetch every [GOAL] issue already pointing at
           # this parent. A query failure is LOUD (no `|| true`), never treated as
           # "no existing goals", so partial runs are recovered per goal.
-          EXISTING_JSON="$(gh issue list --label ai-goal --state all \
-            --search "in:title \"from #${ISSUE_NUMBER}\"" \
+          #
+          # Query via the REST-backed list API (not the search API): the search
+          # index can lag, which would leave a freshly created goal undetected
+          # and stall the chain. Scope to THIS parent locally by exact title
+          # suffix instead, matching the dispatch step below.
+          EXISTING_JSON="$(gh issue list --label ai-goal --state all --limit 200 \
             --json title,url)"
+          EXISTING_JSON="$(printf '%s' "$EXISTING_JSON" | jq --arg suffix "(from #${ISSUE_NUMBER})" \
+            '[.[] | select(.title | endswith($suffix))]')"
           EXISTING_TITLES="$(printf '%s' "$EXISTING_JSON" | jq -r '.[].title')"
           MARKER="$(gh issue view "$ISSUE_NUMBER" --json comments \
             --jq '[.comments[].body] | join("\n") | contains("<!-- orchestrator:v1 -->")')"
@@ -243,10 +248,10 @@ jobs:
           }
           trap on_error ERR
 
-          # Query via the REST-backed list API (not `--search`): goals were just
-          # created in the previous step, and the search index can lag, which
-          # would leave a fresh goal undetected and stall the chain. Scope to
-          # THIS parent locally by exact title suffix instead.
+          # Query via the REST-backed list API (not the search API): goals were
+          # just created in the previous step, and the search index can lag,
+          # which would leave a fresh goal undetected and stall the chain. Scope
+          # to THIS parent locally by exact title suffix instead.
           GOALS_JSON="$(gh issue list --label ai-goal --state all --limit 200 \
             --json number,title,labels)"
 

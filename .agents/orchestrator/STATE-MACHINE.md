@@ -55,8 +55,8 @@ goal/review    awaiting PO verdict
   ├── PO verdict PASS  → goal/done      (terminal)
   │                        PO posts `<!-- verdict:v1 -->`
   │
-  └── PO verdict REVISE → goal/revise
-                           attempt+1, re-enter at goal/tl
+  └── PO verdict REVISE → goal/tl       (re-enter at the TL)
+                           attempt+1; there is NO `goal/revise` label
                            (PO posts `<!-- verdict:v1 -->`)
 ```
 
@@ -69,8 +69,7 @@ Transitions (each is an issue-label edit by the workflow that owns the step):
 | `goal/ready` | `goal/building` | Programmer | work started |
 | `goal/building` | `goal/review` | Programmer | result posted |
 | `goal/review` | `goal/done` | PO | verdict PASS |
-| `goal/review` | `goal/revise` | PO | verdict REVISE |
-| `goal/revise` | `goal/tl` | PO | revision queued, attempt+1 |
+| `goal/review` | `goal/tl` | PO | verdict REVISE (attempt+1; re-enters at the TL — there is no `goal/revise` state) |
 
 ### Goal creation (PO)
 
@@ -104,8 +103,9 @@ these as goal-state labels.
 
 - `MAX_REVISE=3`.
 - The revise counter lives in a **goal-issue comment marker**:
-  `<!-- attempts:N -->`. The PO increments it each time it moves a goal to
-  `goal/revise`; the TL/Programmer read it to size the revision.
+  `<!-- attempts:N -->`. On a `revise` verdict the PO increments it and moves the
+  goal straight back to `goal/tl` (re-entered at the TL); the TL/Programmer read
+  it to size the revision. There is **no** `goal/revise` label.
 - On exceeding the cap (`N > MAX_REVISE`): stop looping, add `needs-human`,
   and post a loud comment naming the attempt count and asking for a human.
 
@@ -241,18 +241,29 @@ A `verdict:v1` payload whose `.attempt` equals the current `ATTEMPT` short-
 circuits the LLM: the stored verdict's transition is re-applied only. Re-running
 `agent-review` on the same attempt therefore never double-calls the model.
 
+Before any LLM call the review also requires the latest `result:v1` payload's
+`.attempt` to equal the current `ATTEMPT`. A queued/duplicate dispatch that
+arrives after a revise advanced the counter carries a **stale** result: the
+review logs a "not ready for this attempt" note and exits 0 with **no** LLM call
+and **no** label/marker change (idempotent no-op), so a stale result can never
+burn a revision.
+
 ### Parent termination
 
 Runs only after a `done` verdict:
 
-1. Discover children with
-   `gh issue list --label ai-goal --state all --search "in:title \"from #<parent>\"" --json number,title,url,labels`.
-2. The parent is complete **iff** the list is non-empty **AND every** child's
-   `labels[].name` contains `goal/done`.
+1. Discover children with the REST-backed list + a local exact-suffix filter
+   (`gh issue list --label ai-goal --state all --limit 200 --json
+   number,title,url,labels`, then keep only titles ending exactly with
+   `(from #<parent>)`). Never `--search`: its index can lag and miss a freshly
+   labeled child.
+2. The parent is complete **iff** the filtered list is non-empty **AND every**
+   child's `labels[].name` contains `goal/done`.
 3. On completion, post a parent comment beginning `<!-- parent-done:v1 -->`
    (goal list + links) and add `status:done`.
 4. Idempotent: skip if the parent already has a `<!-- parent-done:v1 -->` marker
-   or `status:done`.
+   or `status:done`; the marker is re-read immediately before posting so a racing
+   review cannot double-post, and `--add-label` is itself idempotent.
 5. **No auto-close** — see §3; a human closes the parent.
 
 A failed child lookup is a loud failure (no `|| true` treated as empty); the
@@ -277,8 +288,10 @@ GitHub suppresses workflow runs for events a `GITHUB_TOKEN` produces:
 
 So the `issues: labeled` triggers alone leave the automated
 PO → TL → Programmer → PO-review chain dead: the next role never starts.
-(The bot-authored `if:` guard is a second, independent reason the token-made
-label edit would not be picked up even if the run *were* created.)
+(The bot-sender `if:` guard is a second, independent reason the token-made
+label edit would not be picked up even if the run *were* created. Goal issues
+are Bot-authored, so the guard checks the event **sender**, not the issue
+author — a human re-applying a role's entry label must still run the role.)
 
 ### Chosen mechanism: explicit `workflow_dispatch`
 
@@ -481,28 +494,41 @@ and stops. This is the ONLY PR the agent loop opens, and it is **human-gated**:
 
 1. The review (already running for the final `done` goal) resolves
    `integration = issue/<parent#>`.
-2. It computes `ahead_by` from
-   `gh api repos/<repo>/compare/dev...issue/<parent#>` (a missing branch or a
-   failed compare reads as `0`).
+2. It computes `ahead_by` from the fetched git refs, not the compare API:
+   `git fetch --no-tags origin dev` (and the integration branch when present),
+   branch existence via
+   `git ls-remote --exit-code --heads origin "refs/heads/issue/<parent#>"`, then
+   `git rev-list --count origin/dev..origin/issue/<parent#>`. A missing branch
+   reads as `0`; a fetch/transport failure is **loud** (ERR trap), never
+   silently read as `0`. (The compare API cannot take the raw `/` in
+   `issue/<n>` as a path param without encoding, which previously made the
+   ahead count `0` and suppressed the PR.)
 3. **If `ahead_by > 0`:** it opens
    `gh pr create --base dev --head issue/<parent#>` with a title
    `[Issue #<parent#>] <parent title>` and a body listing the child goals +
    links and stating *"Human review required; the agent will not merge. Do not
    merge until reviewed."* Idempotent by open PR head:
    `gh pr list --head issue/<parent#> --state open` — an existing open PR is
-   reused, never duplicated.
+   reused, never duplicated. Creation is **tolerant**: if `gh pr create` fails
+   because a racing review already opened the PR, the role re-lists, reuses the
+   winner's URL, and does not fail; if no PR exists after the failure it
+   surfaces the error through the ERR trap.
 4. **If the branch is missing or `ahead_by == 0`:** no PR is opened; the
    `<!-- parent-done:v1 -->` comment records "no changes to propose".
 5. In both cases the parent gets `status:done` + the `<!-- parent-done:v1 -->`
-   marker (idempotent: skipped when the marker or `status:done` already exists).
+   marker (idempotent: skipped when the marker or `status:done` already exists;
+   the marker is re-read immediately before posting to defeat a racing review).
    The issue is **not** auto-closed.
 
 Before opening the PR the review also performs a **mechanical file check**: each
-`result:v1` path is looked up on the integration branch via
-`gh api repos/<repo>/contents/<path>?ref=issue/<parent#>` (no git auth). A
+`result:v1` path is looked up on the fetched integration branch via
+`git cat-file -e origin/issue/<parent#>:<path>` (read-only git; the job keeps
+`contents: read` and no git auth beyond the read-only checkout token). A
 `MISSING` path makes the prompt instruct a non-`done` verdict, and a model that
 still returns `done` is force-downgraded to `revise`. The `ahead_by` count and
-the file evidence are included in the verdict prompt.
+the file evidence are included in the verdict prompt using the **resolved**
+integration branch (the `result.v1.integration_branch` value, or the
+`issue/<parent#>` fallback).
 
 Hard rules:
 

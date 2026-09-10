@@ -469,8 +469,20 @@ is still out of scope. All model traffic goes through
 - **GNU `base64 -w0` on the encode side** (ubuntu-latest) with `base64 -d` on
   decode: correct on the runner, not portable to BSD/macOS, but the workflows
   only run on Linux.
+
+> **SUPERSEDED by Phase 4b-1 (programmer now pushes task/issue branches).**
+> The Phase-2a claim immediately below is retained only as history and is **no
+> longer true**: the Programmer now writes the changeset's real files to a
+> `task/<goal#>` branch and auto-merges (`--no-ff`) them into the
+> `issue/<parent#>` integration branch, pushing those agent-owned branches
+> (never `dev`/`main`, never `--force`). The deliverable is branch content, not
+> a comment, and the human `/approve` (`agent-build`) gate is orthogonal to the
+> loop. See the Phase 4b-1 section below.
+
 - Programmer never pushes: the deliverable is text in a comment; applying it is
   the human `/approve` (agent-build) gate. No auto-apply.
+
+> **END SUPERSEDED (Phase 2a) — see Phase 4b-1.**
 
 ---
 
@@ -1179,4 +1191,121 @@ still never push `dev`/`main` and never force-push.
   `issue.user.type` clause means a human re-applying `goal/ready`/`goal/tl` on a
   bot-authored goal now runs the role; `sender.type != 'Bot'` still blocks
   bot-triggered label edits, and `workflow_dispatch` remains the automated path.
+
+---
+
+# Phase 4c-2 — review PR-ahead via git, tolerant PR create, stale-result guard, REST child/dedupe queries, drop `goal/revise` (`dev` only — NEVER main)
+
+Second batch of Blocking/Warning fixes from the full-loop audit: the PO review's
+final-PR path and the orchestrator's goal dedupe. Five files. No push/PR/merge
+behavior is weakened: agents still never push `dev`/`main` and never merge.
+
+## What changed (ONLY these 5 files)
+
+- **B2 — the final PR now opens: review ahead/branch/file checks moved from the
+  GitHub API to git.** `gh api repos/<repo>/compare/dev...issue/<N>` put a raw
+  `/` in a path param and 404'd, `|| echo 0` swallowed it, `AHEAD_BY` became 0
+  and the single PR was never opened. The review checkout is now
+  `fetch-depth: 0` + `persist-credentials: true` (read-only token still
+  fetches); it runs `git fetch --no-tags origin dev` and, when present,
+  `git fetch --no-tags origin "refs/heads/${INTEGRATION}:refs/remotes/origin/${INTEGRATION}"`.
+  Branch absence is detected with `git ls-remote --exit-code --heads origin ...`
+  and treated as "no branch";
+  `AHEAD_BY="$(git rev-list --count "origin/dev..origin/${INTEGRATION}" ...)"`;
+  file existence uses `git cat-file -e "origin/${INTEGRATION}:${path}"`. A
+  transport/auth failure is never silently read as 0 — it trips the `ERR` trap.
+- **B4 — tolerant/idempotent final-PR creation.** The parent marker +
+  `status:done` are re-read immediately before finalizing;
+  `gh pr list --head ... --state open` reuses an existing PR, else
+  `gh pr create`; if create fails (a racing review won) it re-lists and reuses
+  the winner's URL, otherwise surfaces the error through the `ERR` trap; the
+  `<!-- parent-done:v1 -->` comment is only posted when the (re-read) marker is
+  absent, and `status:done` is added idempotently. Still no `gh pr merge`, no
+  push.
+- **B5 — review bot guard allows human label recovery.** Removed the
+  `github.event.issue.user.type != 'Bot'` clause from the review job `if:`
+  (kept `github.event.sender.type != 'Bot'` and the `workflow_dispatch`
+  short-circuit). Goal issues are Bot-authored, so the human re-label path now
+  runs.
+- **W1 + W4 + N4 — parent/child completion uses the REST list, not the search
+  index.** The review's child query is now
+  `gh issue list --label ai-goal --state all --limit 200 --json number,title,url,labels`
+  filtered locally by exact title suffix `(from #<parent>)`; the same filtered
+  list feeds the completion check, the PR body, and the parent comment.
+- **W2 — stale `result:v1` cannot burn a revision.** Before any LLM call the
+  review requires the latest `result:v1` `.attempt == ATTEMPT`; on mismatch it
+  logs a "not ready for this attempt" note and exits 0 with no LLM call and no
+  label/marker change.
+- **W5 — orchestrator goal dedupe uses the REST list.** The delegate step's
+  existing-goal lookup is now the REST list + local exact-suffix filter
+  (matching the dispatch step); per-goal exact-title dedupe semantics are
+  unchanged.
+- **W7 — removed the dead `goal/revise` state.** Removed from
+  `.github/labels.yml`, `STATE-MACHINE.md`, and the two workflows' self-heal
+  `gh label create` lines; the contract now states explicitly that a `revise`
+  verdict re-enters at `goal/tl` (no `goal/revise` label exists).
+- **W8 — superseded banner in NOTES.** The Phase-2a "Programmer never pushes /
+  deliverable is a comment" risk bullet is now wrapped in a clearly-marked
+  `SUPERSEDED by Phase 4b-1 (programmer now pushes task/issue branches)` banner.
+- **N5 — resolved integration branch in the review prompt.** The prompt renders
+  the resolved `INTEGRATION` (result value or `issue/<parent#>` fallback) in
+  both the mechanical-check heading and the file note.
+
+## Verification (actual output)
+
+- `ruby -ryaml` parses both workflows + `labels.yml` → `YAML OK`; every `run:`
+  block extracted and `bash -n` → all 4 + 6 OK.
+- Structural assertions: review has **no** `compare/` API call and **no**
+  `gh api`; **no** `--search` anywhere in review/orchestrator; review job `if:`
+  has **no** `issue.user.type`; `pull-requests: write` present; **no**
+  `contents: write` in review; **no** `gh pr merge`; **no** `git push` in
+  review; `gh pr create --base dev --head` present.
+- Mock `gh` + real local git (bare `origin`) + mock `llm_json.sh` drove the
+  extracted review step: **41/41** assertions pass — (a) all children done +
+  branch ahead>0 → exactly one PR + `parent-done:v1` + `status:done` + one LLM
+  call; (b) re-run → no second PR / no duplicate marker / no second LLM;
+  (c) branch absent → no PR, "no changes to propose", still `status:done`;
+  (d) stale `result.attempt != ATTEMPT` → no LLM, no verdict, no label change,
+  exit 0; (e) another parent's goals (incl. `#99` and a `#155` boundary case)
+  excluded by the exact-suffix filter; (f) `gh pr create` fails but a racing PR
+  appears → reused, exit 0; (g) create fails with no PR → `ERR` trap, loud
+  non-zero; (h) empty `integration_branch` renders the resolved `issue/55` in
+  the prompt (no `issue/<unknown>`).
+- Orchestrator W5 filter: exact-suffix keeps only `(from #7)`, excludes
+  `(from #77)` / `(from #177)` / a longer title; per-goal exact-title dedupe
+  skips only the exact existing title.
+- `git status --short` shows exactly the 5 intended files.
+
+## Commit + push record (dev only — NEVER main)
+
+- Message: `fix(agents): git-based review PR checks, tolerant PR create, stale-result guard, REST child/dedupe queries, drop goal/revise (Phase 4c-2)`.
+- Files in this commit (ONLY these 5):
+  - `.github/workflows/agent-review.yml`
+  - `.github/workflows/agent-orchestrate.yml`
+  - `.github/labels.yml`
+  - `.agents/orchestrator/STATE-MACHINE.md`
+  - `.agents/orchestrator/NOTES.md` (this section)
+- Push: `git push origin dev` (no `-i`, no `--force`, no `--no-verify`).
+- Commit SHA + push result: recorded in the follow-up notes commit (its own SHA
+  recorded post-push, not invented here).
+
+## Open risks / follow-ups
+
+- **Live runner unverified.** YAML/`bash -n`/mock-git tests prove syntax and
+  control flow only; the real Actions runner, `GITHUB_TOKEN` read-only fetch,
+  branch protections, and `pull-requests: write` have not run. First live trial =
+  a complete parent whose goals are all `goal/done`, then confirm one open
+  `issue/<parent#>` → `dev` PR appears.
+- **`git ls-remote --exit-code` conflates no-ref with a transport error.** The
+  preceding `git fetch --no-tags origin dev` proves connectivity, so a
+  transport failure surfaces there (ERR trap) before branch detection; the
+  `ls-remote` failure is therefore treated as branch-absent. If connectivity is
+  lost only for the second command, it reads as "no branch" (no PR) rather than
+  loud — narrow, and the parent still gets `status:done`.
+- **Re-checking `status:done` before finalizing can, in a rare race, skip the
+  marker comment.** The racing review posts the marker before adding
+  `status:done`, so the marker exists; this only suppresses our duplicate.
+- **`persist-credentials: true` + `contents: read`** stores the read-only token
+  in git config for the job; the workflow contains no push step, so it is
+  fetch-only. A future added push step would need an explicit permission bump.
 
