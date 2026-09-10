@@ -1145,9 +1145,10 @@ still never push `dev`/`main` and never force-push.
   - `.agents/orchestrator/STATE-MACHINE.md` (§9)
   - `.agents/orchestrator/NOTES.md` (this section)
 - Push: `git push origin dev` (no `-i`, no `--force`, no `--no-verify`).
-- Commit SHA + push result: `<recorded post-push>` — `git push origin dev` OK
-  (`<old>..<new>  dev -> dev`). This notes-record entry is a second, notes-only
-  commit (its own SHA is recorded post-push, not invented here).
+- Fix commit: `2ab3bfe` — `git push origin dev` OK
+  (`f73a32d..2ab3bfe  dev -> dev`).
+- This notes-record entry is a second, notes-only commit (its own SHA is
+  recorded post-push, not invented here).
 
 ## Open risks / follow-ups
 
