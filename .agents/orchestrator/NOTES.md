@@ -1908,4 +1908,5 @@ unchanged.
   7. no dummy key value appears in stdout/stderr.
 - `git diff --stat` → only the 6 allowed code/workflow paths (+ this NOTES.md).
 
-Commit: `<SHA>`; push: `<RESULT>`.
+Commit: `4b84e6b`; push: `origin/dev` `19d5ac1..4b84e6b` (fast-forward, no
+force). This NOTES section is added in a follow-up commit.
