@@ -113,6 +113,12 @@ jobs:
           gh label create "kind/requirement" --color "5319E7" --description "Non-dev kind: requirement" 2>/dev/null || true
           gh label create "kind/user-story" --color "5319E7" --description "Non-dev kind: user story" 2>/dev/null || true
           gh label create "triage/accepted" --color "0E8A16" --description "Triage accepted, ready for work" 2>/dev/null || true
+          # W6: re-classification replaces the prior kind/* - remove the other
+          # four before adding the current one so an issue never accumulates
+          # stale kind labels.
+          for k in feature bug task requirement user-story; do
+            gh issue edit "${ISSUE_NUMBER}" --remove-label "kind/$k" 2>/dev/null || true
+          done
           gh issue edit "${ISSUE_NUMBER}" --add-label "priority/important-soon,kind/${KIND},triage/accepted"
 
       - name: Post triage comment
