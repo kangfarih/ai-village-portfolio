@@ -2000,3 +2000,78 @@ content" without retrying or trying another model.
 
 **Gated model.** `thinkingmachines/inkling:free` is OpenRouter-gated (HTTP 403
 "only available on agentic harnesses") and cannot be used from raw curl.
+
+---
+
+## Single-entry dispatch-only chaining
+
+`agent-triage` is now the **only** workflow on the `issues: types: [labeled]`
+trigger; the four downstream role workflows are `workflow_dispatch`-only.
+
+**Reason.** Every role workflow carried `on: issues: types: [labeled]`, so
+adding *any* label to an issue started a run of *every* role workflow; each
+job's `if:` then skipped the roles whose label did not match. The result was a
+wall of skipped runs for a single label add. With triage as the single entry
+point — it classifies/labels and its final step already dispatches
+`agent-orchestrate` — the downstream `issues: labeled` triggers (and their
+now-dead `github.event.issue.*` job `if:` guards) are unnecessary, and the
+existing dispatch chain takes over.
+
+**Files changed (Commit 1, `c7be8f0`):**
+- `.github/workflows/agent-orchestrate.yml`
+- `.github/workflows/agent-techlead.yml`
+- `.github/workflows/agent-programmer.yml`
+- `.github/workflows/agent-review.yml`
+- `.agents/orchestrator/STATE-MACHINE.md` (§8 rewritten)
+
+In each of the four workflows: removed the `issues: types: [labeled]` trigger
+(only `workflow_dispatch` remains), removed the job-level `if:` guard, and
+replaced every `${{ github.event.issue.number || inputs.issue_number }}` with
+`${{ inputs.issue_number }}` (the `concurrency.group` and the `ISSUE_NUMBER`
+envs). The top-of-file comment blocks now state the workflow is started only by
+an explicit `workflow_dispatch` (from the previous role's chain, or manually
+via Actions -> Run workflow) and that triage is the sole `issues: labeled`
+entry point. Permissions, `cancel-in-progress: false`, `timeout-minutes`, the
+required `issue_number` input, the dispatch steps, and all other logic are
+unchanged.
+
+`agent-triage.yml` was **not** modified (still the one `issues: types:
+[labeled]` workflow, with its `actions: write` hand-off to `agent-orchestrate`).
+`agent-build.yml`, `branch-lint.yml`, `ci-smoke.yml`, `key-test.yml`,
+`llm_json.sh`, and `labels.yml` were not touched.
+
+**Human-resume implication.** Because the downstream label triggers are gone,
+re-applying `goal/tl` / `goal/ready` / `goal/review` no longer starts a run. To
+resume a `needs-human` goal, run the relevant role workflow manually from the
+Actions UI (Run workflow -> `issue_number`) or via
+`gh workflow run <role>.yml -f issue_number=<N>`. Re-running `agent-triage`
+(remove/re-add the `ai-triage` label) restarts the whole chain idempotently.
+Trade-off: no more skipped-run noise, at the cost of the old label-click resume
+convenience.
+
+**Chain:** `agent-triage` -> `agent-orchestrate` -> (per code goal)
+`agent-techlead` -> `agent-programmer` -> `agent-review` -> (on revise)
+`agent-techlead`.
+
+**Verification (actual output):**
+- `ruby -ryaml -e "YAML.load_file(...)"` -> `YAML OK` for all four workflows
+  plus `agent-triage.yml`.
+- All `run:` blocks extracted (Ruby YAML) and `bash -n` each -> `bash -n OK`
+  for all 19 (orchestrate 6, techlead 4, programmer 5, review 4).
+  (`shellcheck` not installed on the host.)
+- `grep -n "issues:"` on the four files matches only the `issues: write`
+  permission and the new doc comments — the trigger declaration is gone:
+  `grep -nE '^  issues:'` and `grep -F 'types: [labeled]'` return no matches on
+  the four, while `grep -nE '^  issues:' agent-triage.yml` still shows line 11.
+- `grep -n "github.event.issue"` on the four -> no matches. A scan for
+  `github.event_name` / `github.event.sender` / `labels.*` -> no matches.
+- `grep -n "workflow_dispatch"` -> present in each of the four.
+- `git status --short` before each commit shows only the intended files.
+
+**Commit + push (dev only — NEVER main):**
+- Commit 1 `c7be8f0` —
+  `refactor(agents): triage is the sole label entry; downstream roles dispatch-only`;
+  `git push origin dev` OK (`3f344f4..c7be8f0  dev -> dev`).
+- Commit 2 (this NOTES record) —
+  `docs(agents): record dispatch-only chaining and manual resume`; its own SHA
+  and push range are recorded in the task report (not invented here).
