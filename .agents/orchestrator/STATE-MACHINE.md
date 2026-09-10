@@ -187,3 +187,70 @@ The workflow injects the attempt number after parsing:
 payloads therefore always carry `attempt` (number). Read the attempt counter from
 the last comment matching `<!-- attempts:N -->` (default 0) via
 `sed -n 's/.*<!-- attempts:\([0-9]*\) -->.*/\1/p'`, empty→0.
+
+---
+
+## 7. Review verdict + termination (v1)
+
+`agent-review` (PO) is the only role that can end a goal. It fires on
+`goal/review`, reads the latest `tl:v1` spec and latest `result:v1` deliverable
+via the §6 extraction, and makes **one** model call at `--effort high` to obtain
+a verdict. If either payload is missing or fails its schema, the review is a
+loud failure: comment + `needs-human` (removing `goal/review`) + `exit 1`.
+
+### Verdict semantics
+
+The model returns:
+
+```
+{"verdict":"done"|"revise","reason":string,"missing":[string],"guidance":string}
+```
+
+- `done` is returned **ONLY if the deliverable satisfies every acceptance item**
+  in the `tl:v1` spec (`objective`/`steps`/`files`/`acceptance`).
+- Otherwise the verdict is `revise`, and `missing[]` names the specific unmet
+  item(s); `reason` and `guidance` carry the readable explanation.
+
+The verdict is posted as `<!-- verdict:v1 -->` (base64 payload + readable
+rendering) with `attempt` injected (§6).
+
+### Revision counter ownership
+
+The **PO owns** the `<!-- attempts:N -->` counter. Only `agent-review` writes it;
+the TL and Programmer only read the latest marker (§2/§6). On a `revise` verdict
+the PO:
+
+1. computes `NEXT = ATTEMPT + 1`;
+2. posts a separate comment whose body is **exactly** `<!-- attempts:NEXT -->`;
+3. moves the goal `goal/review` → `goal/tl` (re-enters the TL).
+
+### Escalation
+
+`MAX_REVISE=3` is a job env var in `agent-review.yml`. When `NEXT > MAX_REVISE`,
+the PO stops looping: it posts a loud escalation comment naming the attempt
+count and moves the goal `goal/review` → `needs-human`. The goal is **never**
+sent back to `goal/tl`, so no further automated revision occurs.
+
+### Idempotency
+
+A `verdict:v1` payload whose `.attempt` equals the current `ATTEMPT` short-
+circuits the LLM: the stored verdict's transition is re-applied only. Re-running
+`agent-review` on the same attempt therefore never double-calls the model.
+
+### Parent termination
+
+Runs only after a `done` verdict:
+
+1. Discover children with
+   `gh issue list --label ai-goal --state all --search "in:title \"from #<parent>\"" --json number,title,url,labels`.
+2. The parent is complete **iff** the list is non-empty **AND every** child's
+   `labels[].name` contains `goal/done`.
+3. On completion, post a parent comment beginning `<!-- parent-done:v1 -->`
+   (goal list + links) and add `status:done`.
+4. Idempotent: skip if the parent already has a `<!-- parent-done:v1 -->` marker
+   or `status:done`.
+5. **No auto-close** — see §3; a human closes the parent.
+
+A failed child lookup is a loud failure (no `|| true` treated as empty); the
+review step wraps its work in an `ERR` trap that posts a visible comment and
+exits non-zero.

@@ -471,3 +471,128 @@ is still out of scope. All model traffic goes through
   only run on Linux.
 - Programmer never pushes: the deliverable is text in a comment; applying it is
   the human `/approve` (agent-build) gate. No auto-apply.
+
+---
+
+# Phase 2b — PO review verdict + loop termination (`dev` only — NEVER main)
+
+Third executable slice of the loop: the PO review role that consumes
+`goal/review`, issues the verdict, and terminates a goal (and its parent). All
+model traffic still goes through `.github/scripts/llm_json.sh`; no role inlines
+`curl`. No push / PR / merge steps anywhere.
+
+## What was built
+
+- `.github/workflows/agent-review.yml` (new) — trigger `goal/review`, effort
+  **high**. Mirrors `agent-techlead.yml` / `agent-programmer.yml` exactly:
+  `on: issues: types: [labeled]`; human `if:` guard
+  (`contains(...,'goal/review') && issue.user.type != 'Bot' && sender.type !=
+  'Bot'`); top-level `permissions: {}` + job `contents: read` / `issues: write`;
+  `runs-on: ubuntu-latest`; `timeout-minutes: 10`; concurrency
+  `agent-review-<n>` with `cancel-in-progress: false`; checkout
+  (`fetch-depth: 1`, `persist-credentials: false`); identity echo; self-heal
+  `gh label create … || true` for `goal/done`, `goal/revise`, `goal/tl`,
+  `goal/review`, `needs-human`, `status:done`; env `GH_TOKEN`,
+  `OPENCODE_API_KEY`, `MODEL=thinkingmachines/inkling:free`; job env
+  `MAX_REVISE: "3"`.
+  - Reads `ATTEMPT` from the last `<!-- attempts:N -->` (default 0), goal
+    title/body + `Parent: #N` + parent title/body.
+  - Reads the latest `tl:v1` and `result:v1` via the §6 extraction and validates
+    each against its schema; either missing/undecodable → loud comment +
+    `needs-human` (remove `goal/review`) + `exit 1`.
+  - Idempotent on a `verdict:v1` payload whose `.attempt == ATTEMPT`: skips the
+    LLM and re-applies the stored verdict's transition.
+  - Otherwise calls `llm_json.sh --effort high` with the mandated PO system
+    prompt and schema
+    (`verdict in {done,revise}` + string `reason` + array `missing` + string
+    `guidance`), injects `.attempt`, and posts the `verdict:v1` comment (base64
+    payload + readable verdict/reason/missing/guidance).
+  - Applies the verdict: `done` → remove `goal/review`, add `goal/done`;
+    `revise` → `NEXT=ATTEMPT+1`, post a separate comment **exactly**
+    `<!-- attempts:NEXT -->`, then `goal/tl` (or, when `NEXT > MAX_REVISE`,
+    `needs-human` + a loud escalation comment naming the attempt count).
+  - Parent termination (only after `done`): skip if the parent already carries a
+    `<!-- parent-done:v1 -->` marker or `status:done`; otherwise discover
+    children with
+    `gh issue list --label ai-goal --state all --search "in:title \"from #<parent>\"" --json number,title,url,labels`
+    and, when the list is non-empty AND every child has `goal/done`, post
+    `<!-- parent-done:v1 -->` + the goal list/links and add `status:done`. No
+    auto-close.
+  - An `ERR` trap over the review step posts a loud comment and exits non-zero;
+    the child lookup uses no `|| true`, so a failed query is loud rather than an
+    empty "no children".
+- `.agents/orchestrator/STATE-MACHINE.md` — appended **§7 Review verdict +
+  termination (v1)**: exact verdict semantics, PO-owned `<!-- attempts:N -->`
+  counter, `MAX_REVISE=3` escalation, the `<!-- parent-done:v1 -->` marker +
+  `status:done` condition, and no auto-close. §1–§6 semantics unchanged.
+- `.agents/orchestrator/NOTES.md` (this section).
+
+## Verification (pre-commit)
+
+- `ruby -ryaml -e "YAML.load_file(...)"` OK for `agent-review.yml`; job/if/
+  concurrency/MAX_REVISE parsed as expected.
+- `bash -n` OK for all 3 extracted `run:` blocks (`shellcheck` not installed).
+- Mock `gh` + mock `llm_json.sh` drove the **full extracted review step**
+  end-to-end (47 assertions, all pass):
+  - done verdict + all children `goal/done` → `goal/done` + `status:done` +
+    `<!-- parent-done:v1 -->`;
+  - revise at attempt 0 → exact `<!-- attempts:1 -->` + `goal/tl`, no
+    `needs-human`;
+  - revise at attempt 3 (`NEXT=4 > MAX_REVISE`) → `needs-human`, no `goal/tl`,
+    exact `<!-- attempts:4 -->`, loud escalation comment;
+  - done but one child not `goal/done` → goal done, parent **not** marked;
+  - done but empty child list → parent **not** marked;
+  - pre-existing `verdict:v1` for the attempt → no LLM call, transition
+    re-applied;
+  - missing `tl:v1` → loud comment + `needs-human` + exit 1, no LLM;
+  - failed child lookup → `ERR` trap → loud comment + exit 1;
+  - LLM failure → loud comment + `needs-human` + exit 1 (1 call);
+  - missing `OPENCODE_API_KEY` → loud comment + `needs-human` + exit 1 (0 calls);
+  - §6 extraction/decoding round-trips a payload surrounded by hostile readable
+    text (`%`, quotes, backticks, pipe, newlines, marker echo before a blank
+    line).
+  - `jq -e` verdict schema accepts `done` + `revise`, rejects a bad verdict,
+    missing `reason`, non-array `missing`, missing `guidance`, arrays, `{}`.
+  - `jq` all-done detection: all `goal/done` → true; one not → false; empty →
+    false; label-less element → false.
+- `git diff --stat` touches only the 3 Phase 2b paths.
+
+## Commit + push record (dev only — NEVER main)
+
+- Message: `feat(agents): PO review verdict workflow + parent termination (loop v1)`.
+- Files in this commit (ONLY these 3):
+  - `.github/workflows/agent-review.yml` (new)
+  - `.agents/orchestrator/STATE-MACHINE.md` (§7 appended)
+  - `.agents/orchestrator/NOTES.md` (this section)
+- Push: `git push origin dev` (no `-i`, no `--force`, no `--no-verify`).
+- Commit SHA + push result: recorded post-push in the notes-only follow-up
+  commit (SHA unknowable before commit, so not invented here).
+
+## Open risks / follow-ups
+
+- **Live LLM unverified**: YAML parse + `bash -n` + mocked end-to-end flows
+  prove syntax and control flow only. The real OpenRouter path and real `gh`
+  comment/label/list behaviour have never run; first trial = a goal issue
+  labeled `goal/review` with `OPENCODE_API_KEY` set.
+- **Bot guard vs. token-created label events (loop wiring risk)**: the mandated
+  `if:` guard rejects bot-authored issues/senders, and `GITHUB_TOKEN`-made label
+  edits do not start new runs. As with the TL/Programmer roles, the automated
+  `goal/building → goal/review` hand-off (token-made) will not fire
+  `agent-review` without an App/PAT identity or a deliberate human re-label.
+  This task implements the frozen guard verbatim and does not change wiring.
+- **§6 extractor and a literal marker echoed in readable text**: `sed -n
+  '/<!-- <marker> -->/{n;p;}'` also matches the marker inside the readable
+  section; if that echo is followed by a non-blank line, `base64 -d` can return
+  a corrupt payload. The review fails **loudly** (schema validation →
+  `needs-human`) rather than mis-reviewing, but this is a shared TL/Programmer/
+  review extractor property, not introduced here and not changed (the task
+  mandates §6 verbatim).
+- **Parent lookup failure after `done`**: the goal is already `goal/done` when
+  parent discovery runs; if discovery fails, the `ERR` trap is loud but the
+  parent is left unmarked. Retrying (re-apply `goal/review`) is idempotent and
+  safe because the verdict payload for the attempt already exists.
+- **`gh issue list --search` indexing lag**: the child query uses GitHub search;
+  a freshly labeled child can be briefly stale, delaying parent completion. The
+  `agent-review-<n>` concurrency group serializes review runs per goal.
+- Free-model verdict quality/drift: the schema only constrains shape, not
+  judgment; `missing[]` and `guidance` are advisory to the TL/Programmer.
