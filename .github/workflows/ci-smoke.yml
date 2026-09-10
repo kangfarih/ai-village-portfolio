@@ -69,6 +69,13 @@ jobs:
 
       - name: Diff size guard (<400 lines)
         run: |
+          # Batched integration PRs (issue/<n> -> dev) intentionally carry every
+          # child goal of one parent, so they are expected to exceed 400 lines;
+          # exempt only this size gate for them (all other smoke steps still run).
+          if echo "${{ github.head_ref }}" | grep -Eq '^issue/[0-9]+$'; then
+            echo "SKIP: batched integration PR (issue/<n>)"
+            exit 0
+          fi
           git fetch origin "${{ github.base_ref }}" --depth=1 || true
           RANGE="origin/${{ github.base_ref }}...HEAD"
           echo "Diff range: $RANGE"

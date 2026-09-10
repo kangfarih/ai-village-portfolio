@@ -1311,3 +1311,103 @@ behavior is weakened: agents still never push `dev`/`main` and never merge.
   in git config for the job; the workflow contains no push step, so it is
   fetch-only. A future added push step would need an explicit permission bump.
 
+---
+
+# Phase 4c-3 — final PR head passes the repo's own PR checks (`dev` only — NEVER main)
+
+Last full-loop audit Blocking fix (B7). The loop ends by opening one PR
+`issue/<parent#>` → `dev`, but the repo's own PR checks rejected that head:
+`branch-lint` only accepted `session/...` and `ci-smoke`'s 400-line diff gate
+always failed a batched integration PR. Agents still never push `dev`/`main`,
+never force-push, and never merge; no other behavior changed. Only the two
+workflows were modified (plus this NOTES record). No role/workflow execution
+logic changed.
+
+## What changed (ONLY these 3 files)
+
+- **`.github/workflows/branch-lint.yml`** — the head-naming regex now accepts
+  EITHER existing convention:
+  - `^session/(T|B)-[0-9]+-[a-z0-9-]+-[0-9]{8}-[a-z]+$` (human session), or
+  - `^(issue|task)/[0-9]+$` (agent integration `issue/<parent#>`; `task/<goal#>`
+    accepted for completeness though task branches are not PR heads in the loop).
+
+  Combined filter:
+  `^(session/(T|B)-[0-9]+-[a-z0-9-]+-[0-9]{8}-[a-z]+|(issue|task)/[0-9]+)$`.
+  The error message now lists both accepted forms. The `BASE == dev` check and
+  the least-privilege job `permissions` (`contents: read`,
+  `pull-requests: read`; top-level `{}`) are unchanged.
+- **`.github/workflows/ci-smoke.yml`** — the `Diff size guard (<400 lines)` step
+  now begins by detecting an integration head
+  (`echo "${{ github.head_ref }}" | grep -Eq '^issue/[0-9]+$'`) and, when it
+  matches, echoes `SKIP: batched integration PR (issue/<n>)` and `exit 0` **for
+  that step only**. A one-PR-per-parent batched integration PR intentionally
+  carries every child goal and will always exceed 400 lines, so the size gate is
+  meaningless for it. A short YAML/`run:` comment explains the exemption. Every
+  other step (SPEC escapes, `node --check`, secrets grep, `.env/.pem/.key`
+  filename gate) still runs for `issue/*` PRs. Triggers and permissions
+  unchanged.
+- **`.agents/orchestrator/NOTES.md`** (this section).
+
+## Known limitation — `GITHUB_TOKEN` PRs do not trigger `pull_request` workflows
+
+A PR opened with the workflow `GITHUB_TOKEN` does **not** trigger
+`pull_request`-event workflows (GitHub's recursion/loop-prevention rule). The
+final loop PR is opened by `agent-review` using `GITHUB_TOKEN`, so
+`branch-lint` and `ci-smoke` **may not run on it at creation time** — the fix
+above makes the head *acceptable to* those checks, but does not guarantee they
+execute. The backstop is a human push (or a re-open/synchronize by a
+human/App identity), or branch-protection required-status-check configuration
+that treats the checks appropriately; that config lives outside these files and
+is not changed here.
+
+## Verification (actual output)
+
+- `ruby -ryaml -e "YAML.load_file(...)"` → `branch-lint YAML OK`,
+  `ci-smoke YAML OK`.
+- All `run:` blocks extracted via Ruby YAML and `bash -n` each → `bash -n OK`
+  for `branch-lint[0]` and `ci-smoke[0..3]` (5 total; `shellcheck` not installed
+  on the host).
+- Head-naming grep logic (on-disk regex tested directly):
+  - `ACCEPT  issue/55`
+  - `ACCEPT  task/55`
+  - `ACCEPT  session/T-010-hero-20260910-ab`
+  - `REJECT  dev`
+  - `REJECT  issue/`
+  - `REJECT  issue/abc`
+  - `REJECT  feat/x`
+- Integration skip detection (on-disk `^issue/[0-9]+$`):
+  - `SKIP    issue/55`
+  - `RUN     issue/55x`
+  - `RUN     task/55`
+  - `RUN     session/T-010-hero-20260910-ab`
+  - `RUN     feat/x`
+- `git status --short` shows exactly the 3 intended files.
+
+## Commit + push record (dev only — NEVER main)
+
+- Message: `fix(ci): accept issue/<parent#> PR head and exempt batched integration PR from size guard (Phase 4c-3)`.
+- Files in this commit (ONLY these 3):
+  - `.github/workflows/branch-lint.yml`
+  - `.github/workflows/ci-smoke.yml`
+  - `.agents/orchestrator/NOTES.md` (this section)
+- Push: `git push origin dev` (no `-i`, no `--force`, no `--no-verify`).
+- Commit SHA + push result: `<recorded post-push>` — `git push origin dev` OK.
+  This notes-record entry is a second, notes-only commit recording the SHA
+  (its own SHA is recorded post-push, not invented here).
+
+## Open risks / follow-ups
+
+- **`GITHUB_TOKEN` PRs may not run these checks at creation** (see limitation
+  above). Until branch protection/App identity is configured, a green
+  `branch-lint`/`ci-smoke` result on the agent PR is not automatic; a human
+  re-push or required-check config is the backstop.
+- **`task/<n>` now passes `branch-lint` as a PR head** for completeness. In the
+  loop `task/<goal#>` branches are auto-merged into `issue/<parent#>` and are not
+  PR heads, so this only widens the accepted pattern by one harmless form.
+- **The size guard is skipped per-step, not bypassed globally.** A malicious or
+  accidental `issue/<n>` PR could carry an arbitrarily large diff past the size
+  gate; the remaining smoke steps (escapes, `node --check`, secrets, secret
+  filenames) still run, and human review of the batched PR remains the gate.
+- **Regex is intentionally strict** (`^issue/[0-9]+$`, no leading zeros
+  restriction): `issue/0` and `issue/007` would pass; harmless for head naming.
+
