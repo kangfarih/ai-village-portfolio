@@ -109,6 +109,11 @@ delegation. Do not treat any of these as goal-state labels.
 
 ### Triage classification
 
+`agent-triage` fires **only when the `ai-triage` label itself is added**
+(`github.event.label.name == 'ai-triage'`), not on other label events. Its job
+`if:` is label-scoped, so adding any other label to an already-triaged issue
+neither re-runs triage nor re-dispatches the orchestrator.
+
 `agent-triage` LLM-classifies the issue's `kind` into exactly one of
 `{feature, bug, task, requirement, user-story}`, applies the matching
 `kind/<kind>` label (plus `priority/important-soon` and `triage/accepted`), and
@@ -407,6 +412,20 @@ attempt that already has its marker short-circuits the LLM and only re-applies
 the transition. Repeated dispatches are therefore safe, and a failed hand-off
 can be retried by re-running the workflow manually with `issue_number` (or by
 re-running `agent-triage` to restart the chain).
+
+**Orchestrator idempotency guard.** `agent-orchestrate` runs an idempotency
+check before its LLM step. If the parent already carries the success marker
+`<!-- orchestrator:v1 -->` **and** at least one child goal (`ai-goal`, title
+ending `(from #<parent>)`) or ticket (`ai-ticket`, body carrying the exact
+`<!-- agent-ticket:v1 origin:#<parent> -->` marker) exists, the run is a no-op:
+the LLM breakdown, goal/ticket delegation, and TL dispatch steps are all skipped
+(`if: steps.guard.outputs.skip != 'true'`). This is what prevents a duplicate
+dispatch (e.g. a manual run racing the triage-dispatched run) from re-deriving
+goals and re-dispatching `agent-techlead` for the same goals. A manual
+`workflow_dispatch` with input `force=true` bypasses the guard and re-runs the
+orchestration. A failed guard query (missing marker / unresolvable list) is
+treated as "not yet orchestrated" and proceeds, so a transient `gh` error never
+strands the loop.
 
 ---
 
