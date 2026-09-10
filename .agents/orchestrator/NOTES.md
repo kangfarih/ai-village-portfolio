@@ -102,6 +102,15 @@ Findings (reviewer report, `agent-orchestrate.yml` on `dev`):
    workflow posts now starts with the literal marker
    `<!-- orchestrator:v1 -->` as its first line.
 
+## Commit + push record — review fixes (dev only — NEVER main)
+
+- Message: `fix(orchestrator): jq crash guard, self-heal triage/accepted, idempotency marker`.
+- Files: `.github/workflows/agent-orchestrate.yml`,
+  `.agents/orchestrator/NOTES.md` (ONLY these 2 — `labels.yml` untouched).
+- Fix commit: `485d5d4` — `git push origin dev` OK
+  (`c4fa145..485d5d4  dev -> dev`).
+- This notes-record entry: second notes-only commit (SHA recorded post-push).
+
 ## Open risks / follow-ups
 
 - **LLM call unverified until a live `ai-orchestrate` event**: YAML parse +
