@@ -439,8 +439,10 @@ is still out of scope. All model traffic goes through
   - `.agents/orchestrator/STATE-MACHINE.md` (§6 appended)
   - `.agents/orchestrator/NOTES.md` (this section)
 - Push: `git push origin dev` (no `-i`, no `--force`, no `--no-verify`).
-- SHA + push result: recorded in the follow-up notes-only commit (SHA is
-  unknowable before the commit, so it is not invented here).
+- Commit SHA + push result: `a87f818` — `git push origin dev` OK
+  (`f8b23e4..a87f818  dev -> dev`).
+- This notes-record entry is a second, notes-only commit (its own SHA is
+  recorded post-push, not invented here).
 
 ## Open risks / follow-ups
 
