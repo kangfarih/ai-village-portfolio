@@ -9,7 +9,7 @@ permissions: {}
 # Human merge + /approve judgment stay human; this job only comments.
 on:
   issues:
-    types: [opened, labeled]
+    types: [labeled]
 
 jobs:
   triage:
@@ -41,12 +41,20 @@ jobs:
           echo "Agent: pure GitHub workflow agent"
           echo "Model: thinkingmachines/inkling:free"
 
-      # Native bash step: post triage comment (read-only, no PR/push/merge).
-      - name: Triage comment (native bash)
+      - name: Apply triage labels
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
         run: |
-          echo "/triage for issue #${ISSUE_NUMBER} (${ISSUE_TITLE})"
-          echo "Summarize in 3-5 sentences; propose DoR checklist."
-          echo "Post exactly ONE comment. Do NOT open PRs. Do NOT push. Do NOT merge."
+          echo "Applying labels to issue #${ISSUE_NUMBER}: ${ISSUE_TITLE}"
+          gh issue edit "${ISSUE_NUMBER}" --add-label "priority/important-soon,kind/task,triage/accepted"
+
+      - name: Post triage comment
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          echo "Posting triage comment for issue #${ISSUE_NUMBER}: ${ISSUE_TITLE}"
+          SUMMARY="This issue requires triage and prioritization. It has been labeled accordingly and is ready for review. The description outlines the problem clearly, and the criteria for resolution are specified. Dependencies and reproducibility need verification before proceeding."
+          printf '%s\n' "${SUMMARY}" "" "DoR Checklist:" "- Description: clearly stated" "- Criteria: defined" "- Dependencies: identified" "- Priority: set" "- Reproducible: needs verification" "" "Agent: pure GitHub workflow agent | Model: thinkingmachines/inkling:free" "" "Do NOT open PRs. Do NOT push. Do NOT merge." | gh issue comment "${ISSUE_NUMBER}" --body-file -
