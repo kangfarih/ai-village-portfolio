@@ -1966,3 +1966,37 @@ read `${{ vars.MODEL }}` (default `nex-agi/nex-n2.5-pro:free`).
 
 Commit: `3270853`; push: `origin/dev` `f75d814..3270853` (fast-forward, no
 force). This NOTES section is added in a follow-up commit.
+
+## Model selection: default switched to nex-agi/nex-n2.5-mini:free
+
+**Why.** Free OpenRouter models were benchmarked live against the user's
+OpenRouter key on 2026-09-11, exercising the three real JSON schemas the loop
+uses (object-classify, goal-array, programmer-file). The default was changed
+from `nex-agi/nex-n2.5-pro:free` to `nex-agi/nex-n2.5-mini:free`, which was the
+fastest model to pass all three schemas (1–3s).
+
+Benchmark (free models; object-classify / goal-array / programmer-file schemas):
+
+| Model | object-classify | goal-array | programmer-file |
+|---|---|---|---|
+| `nex-agi/nex-n2.5-mini:free` | OK 1s | PASS 2s | PASS 3s |
+| `nex-agi/nex-n2.5-pro:free` | OK 3s | PASS 22s | PASS 29s |
+| `nvidia/nemotron-3.5-lightning:free` | OK 7s | PASS 41s | — |
+| `dots-studio/dots-3-note-preview:free` | OK 3s | PASS 12s | PASS 21s |
+| `cohere/north-mini-code:free` | OK 1s | PASS 2s | PASS 6s |
+| `inclusionai/ling-3.0-flash-fin:free` | OK 2s | FAIL (emitted ```` ```json ```` fences; `llm_json.sh` strips fences so it may still pass) | — |
+| `nvidia/nemotron-3-ultra-550b-a55b:free` | OK 3s | HTTP 200 with upstream-overload error body (no content) | — |
+| `nvidia/nemotron-3-super-120b-a12b:free` | HTTP 200 upstream overload (no content) | — | — |
+| `poolside/laguna-s-2.1:free`, `google/gemma-4-26b-a4t-it:free`, `google/gemma-4-31b-it:free` | HTTP 429 | — | — |
+
+**Decision.** `nex-agi/nex-n2.5-mini:free` is the default (fast + passes all
+three schemas). `nex-agi/nex-n2.5-pro:free` remains a higher-quality-but-slower
+alternative, selectable at any time via the repository Variable `MODEL`.
+
+**Known gap (recorded, not fixed here).** Some providers return HTTP 200 with an
+`{"error": ...}` body and no choices content (e.g. the nemotron overload above).
+`llm_json.sh` currently fails that as "HTTP 200 but response contained no message
+content" without retrying or trying another model.
+
+**Gated model.** `thinkingmachines/inkling:free` is OpenRouter-gated (HTTP 403
+"only available on agentic harnesses") and cannot be used from raw curl.
