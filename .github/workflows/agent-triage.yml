@@ -53,7 +53,7 @@ jobs:
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           echo "Posting triage comment for issue #${ISSUE_NUMBER}: ${ISSUE_TITLE}"
           SUMMARY="This issue requires triage and prioritization. It has been labeled accordingly and is ready for review. The description outlines the problem clearly, and the criteria for resolution are specified. Dependencies and reproducibility need verification before proceeding."
