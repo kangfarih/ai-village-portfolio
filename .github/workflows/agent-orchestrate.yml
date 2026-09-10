@@ -215,8 +215,11 @@ jobs:
           }
           trap on_error ERR
 
-          GOALS_JSON="$(gh issue list --label ai-goal --state all \
-            --search "in:title \"from #${ISSUE_NUMBER}\"" \
+          # Query via the REST-backed list API (not `--search`): goals were just
+          # created in the previous step, and the search index can lag, which
+          # would leave a fresh goal undetected and stall the chain. Scope to
+          # THIS parent locally by exact title suffix instead.
+          GOALS_JSON="$(gh issue list --label ai-goal --state all --limit 200 \
             --json number,title,labels)"
 
           # Only THIS parent's goals (exact title suffix) still at `goal/tl`
