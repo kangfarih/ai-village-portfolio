@@ -679,8 +679,9 @@ merge implementation is Phase 4b. All model traffic still goes through
   - `.agents/orchestrator/STATE-MACHINE.md` (§9 appended)
   - `.agents/orchestrator/NOTES.md` (this section)
 - Push: `git push origin dev` (no `-i`, no `--force`, no `--no-verify`).
-- Commit SHA + push result: `recorded in the follow-up notes-only commit`
-  (its own SHA is recorded post-push, not invented here).
+- Commit SHA + push result: `4ea5642` — `git push origin dev` OK
+  (`b7d5a98..4ea5642  dev -> dev`). This notes-record entry is a second,
+  notes-only commit (its own SHA is recorded post-push, not invented here).
 
 ## Open risks / follow-ups
 
