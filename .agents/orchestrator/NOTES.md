@@ -357,3 +357,115 @@ section is the NOTES record.
   concurrency group serializing runs).
 - Phase-2 TL / Programmer / review workflows do not exist yet; `goal/tl` is now
   applied but nothing consumes it until they ship.
+
+---
+
+# Phase 2a — TL + Programmer role workflows (`dev` only — NEVER main)
+
+Second executable slice of the loop: the two workers that consume `goal/tl` and
+`goal/ready`. Only these roles are built here; PO review (`goal/review` verdict)
+is still out of scope. All model traffic goes through
+`.github/scripts/llm_json.sh`; no role inlines `curl`.
+
+## What was built
+
+- `.github/workflows/agent-techlead.yml` (new) — trigger `goal/tl`, effort
+  **medium**. Mirrors `agent-orchestrate.yml`: `on: issues: [labeled]`, human
+  `if:` guard (`issue.user.type != 'Bot'` + `sender.type != 'Bot'`), top-level
+  `permissions: {}` + job `contents: read` / `issues: write`,
+  `fetch-depth: 1` + `persist-credentials: false`, identity echo, self-heal
+  `goal/tl`/`goal/ready` via `gh label create … || true`, and the
+  `agent-techlead-<n>` concurrency group. Reads the latest `tl:v1` payload; if
+  `.attempt == ATTEMPT` it skips the LLM and only performs the transition.
+  Otherwise it reads the goal title/body + `Parent: #N` parent + latest
+  `verdict:v1` reason/guidance, calls `.github/scripts/llm_json.sh --effort
+  medium` with the TL system prompt and schema
+  (`objective/steps/files/acceptance/kind`), injects `.attempt`, posts the
+  `tl:v1` comment (base64 payload + readable markdown), then
+  `--remove-label goal/tl --add-label goal/ready`.
+- `.github/workflows/agent-programmer.yml` (new) — trigger `goal/ready`, effort
+  **medium** for `kind=="code"` else **low**. Claims first
+  (`--remove-label goal/ready --add-label goal/building`), reads the latest
+  `tl:v1`; missing/invalid → loud comment + `needs-human`. Idempotent on a
+  `result:v1` whose `.attempt == ATTEMPT`. Calls `llm_json.sh` with the
+  Programmer system prompt + schema (`summary/deliverable/changes/evidence/
+  needs_human/needs_human_reason`), injects `.attempt`, posts the `result:v1`
+  comment, then either `needs-human` (when `.needs_human == true`) or
+  `--remove-label goal/building --add-label goal/review`. An `ERR` trap, the
+  missing-key check, and the missing-spec check all post a loud comment and move
+  the goal to `needs-human` (removing `goal/building`) then `exit 1`;
+  `goal/ready` is never re-added, so there is no retry loop. No push/PR/merge.
+- `.agents/orchestrator/STATE-MACHINE.md` — appended **§6 Comment payload
+  format (v1)**: the `<!-- marker -->` / single-line base64 / `<!-- /marker -->`
+  envelope, the `tl:v1` / `result:v1` / `verdict:v1` markers, the exact
+  `RAW`/`PAYLOAD`/`JSON` extraction snippet, attempt injection, and the
+  `<!-- attempts:N -->` counter (empty→0).
+- `.agents/orchestrator/NOTES.md` (this section).
+
+## Verification (pre-commit)
+
+- `ruby -ryaml -e "YAML.load_file(...)"` OK for both new workflows.
+- `bash -n` OK for all 6 extracted `run:` blocks (`shellcheck` not installed).
+- Mock `gh` + a mock `llm_json.sh` drove both workflows end-to-end:
+  - TL: attempts=1 + no payload → medium LLM, `tl:v1` posted with `attempt:1`,
+    transition to `goal/ready`; existing `tl:v1` for the same attempt → no LLM,
+    transition only; missing key → loud comment + exit 1, no LLM; helper
+    failure → loud comment + exit 1, no transition.
+  - Programmer: kind=code → effort medium, `result:v1` posted with `attempt:0`,
+    transition to `goal/review`; kind=docs → effort low; `needs_human:true` →
+    `needs-human`, no `goal/review`; existing `result:v1` for the attempt → no
+    LLM, transition only; missing/invalid `tl:v1` → `needs-human` + exit 1;
+    missing key → `needs-human` + exit 1; helper failure → `needs-human` +
+    exit 1; claim failure → `ERR` trap → exactly one loud comment + `needs-human`
+    + exit 1 (no double-post, no `goal/ready` re-add).
+- Marker extraction/decoding round-trip (TL/result/verdict) on a sample comment,
+  including hostile model text (`%`, `"`, backticks, `|`, newlines) and a marker
+  string echoed inside the readable section: extraction still returns the
+  base64 line; attempt parsing picks the last `<!-- attempts:N -->` and
+  defaults to 0.
+- Schemas exercised with `jq -e`: TL accepts code/docs/analysis and rejects a
+  missing `objective`, non-array `steps`, bad `kind`, arrays, and `{}`;
+  Programmer accepts only when every field has the exact type and rejects
+  `needs_human` as a string, missing fields, non-string `deliverable`,
+  non-array `changes`, and non-objects.
+- `git diff --stat` touches ONLY the 4 Phase 2a paths.
+
+## Commit + push record (dev only — NEVER main)
+
+- Message: `feat(agents): TL and Programmer role workflows (loop v1)`.
+- Files in this commit (ONLY these 4):
+  - `.github/workflows/agent-techlead.yml` (new)
+  - `.github/workflows/agent-programmer.yml` (new)
+  - `.agents/orchestrator/STATE-MACHINE.md` (§6 appended)
+  - `.agents/orchestrator/NOTES.md` (this section)
+- Push: `git push origin dev` (no `-i`, no `--force`, no `--no-verify`).
+- SHA + push result: recorded in the follow-up notes-only commit (SHA is
+  unknowable before the commit, so it is not invented here).
+
+## Open risks / follow-ups
+
+- **Live LLM unverified**: YAML parse + `bash -n` + mocked end-to-end flows
+  prove syntax and control flow only. The real OpenRouter path and real `gh`
+  comment/label behaviour have never run; first trial = a goal issue labeled
+  `goal/tl` with `OPENCODE_API_KEY` set.
+- **`verdict:v1` shape is inferred**: `agent-review` (the PO verdict workflow)
+  is not built in this task, so the TL reads `.reason`/`.guidance` defensively
+  (`try … catch` + `// ""`). If the PO writes different keys, revision context
+  is empty (not fatal); reconcile when `agent-review` ships.
+- **Attempt counter is PO-owned**: the TL/Programmer only read
+  `<!-- attempts:N -->`; nothing increments it yet (PO revise path is not
+  built), so attempts stay 0 until `agent-review` exists.
+- **Bot guard vs. token-created goals (loop wiring risk)**: the mandated `if:`
+  guard rejects `issue.user.type == 'Bot'` and `sender.type == 'Bot'`, and
+  `GITHUB_TOKEN`-created events do not start new workflow runs. Since
+  `agent-orchestrate` creates goals *and* applies `goal/tl` with
+  `GITHUB_TOKEN`, those label events are both non-triggering and bot-authored,
+  so the automated PO→TL hand-off does not fire as-is. This task implements the
+  frozen guard **verbatim** and does not change token/trigger wiring; the
+  hand-off needs either an App/PAT identity that produces human-like events or a
+  deliberate human re-label step — decide this before a live end-to-end trial.
+- **GNU `base64 -w0` on the encode side** (ubuntu-latest) with `base64 -d` on
+  decode: correct on the runner, not portable to BSD/macOS, but the workflows
+  only run on Linux.
+- Programmer never pushes: the deliverable is text in a comment; applying it is
+  the human `/approve` (agent-build) gate. No auto-apply.

@@ -155,3 +155,35 @@ Justification (vs a committed state file):
 - `cancel-in-progress: false` is deliberate: a cancelled mid-flight run could
   leave a label applied without its marker comment (or vice versa), so runs
   queue instead of being killed.
+
+---
+
+## 6. Comment payload format (v1)
+
+Every role artifact is a comment of the form:
+
+```
+<!-- <marker> -->
+<single-line base64 of the compact JSON payload>
+<!-- /<marker> -->
+
+<human-readable markdown rendering>
+```
+
+Markers: `tl:v1` (TL spec), `result:v1` (Programmer), `verdict:v1` (PO review).
+Because the base64 line is isolated between marker lines, arbitrary model text in
+the readable section can never break extraction.
+
+Read the LATEST payload with:
+
+```bash
+RAW="$(gh issue view "$ISSUE_NUMBER" --json comments --jq '[.comments[].body] | map(select(contains("<!-- tl:v1 -->"))) | last // ""')"
+PAYLOAD="$(printf '%s' "$RAW" | sed -n '/<!-- tl:v1 -->/{n;p;}')"
+JSON="$(printf '%s' "$PAYLOAD" | base64 -d 2>/dev/null || true)"
+```
+
+The workflow injects the attempt number after parsing:
+`JSON="$(printf '%s' "$JSON" | jq --argjson a "$ATTEMPT" '. + {attempt:$a}')"`;
+payloads therefore always carry `attempt` (number). Read the attempt counter from
+the last comment matching `<!-- attempts:N -->` (default 0) via
+`sed -n 's/.*<!-- attempts:\([0-9]*\) -->.*/\1/p'`, empty→0.
