@@ -22,3 +22,11 @@
 
 ## Cleanup
 - The custom `GH_TOKEN` repo secret is now unused and can be deleted.
+
+## Self-healing labels fix (missing labels on GitHub)
+- Root cause: `Apply triage labels` step failed with `'priority/important-soon' not found` because those three labels were never created on GitHub. Repo convention lives in `.github/labels.yml`, which is manual-only (no label-sync Action), and `labels.yml` does not even list `priority/important-soon`, `kind/task`, or `triage/accepted`. Auth was fine — no `GH_TOKEN` lines changed.
+- Fix (`.github/workflows/agent-triage.yml` only, `Apply triage labels` step): inserted three idempotent self-healing creates BEFORE the existing `gh issue edit` line (echo + edit lines unchanged, order: echo → 3x create → edit; `GH_TOKEN: ${{ github.token }}`, trigger `types: [labeled]`, permissions unchanged; no PR/push/merge steps):
+  - `gh label create "priority/important-soon" --color "0E8A16" --description "Triage priority: needs staffing soon" 2>/dev/null || true`
+  - `gh label create "kind/task" --color "1D76DB" --description "Task or decision item" 2>/dev/null || true`
+  - `gh label create "triage/accepted" --color "0E8A16" --description "Triage accepted, ready for work" 2>/dev/null || true`
+- Verification: `ruby -ryaml -e "YAML.load_file(...)"` → `YAML OK`; `git diff` shows exactly 3 added lines in the `Apply triage labels` run block, nothing else touched.

@@ -48,6 +48,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           echo "Applying labels to issue #${ISSUE_NUMBER}: ${ISSUE_TITLE}"
+          gh label create "priority/important-soon" --color "0E8A16" --description "Triage priority: needs staffing soon" 2>/dev/null || true
+          gh label create "kind/task" --color "1D76DB" --description "Task or decision item" 2>/dev/null || true
+          gh label create "triage/accepted" --color "0E8A16" --description "Triage accepted, ready for work" 2>/dev/null || true
           gh issue edit "${ISSUE_NUMBER}" --add-label "priority/important-soon,kind/task,triage/accepted"
 
       - name: Post triage comment
