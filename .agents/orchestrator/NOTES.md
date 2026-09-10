@@ -849,8 +849,9 @@ and never force-push; the final `issue/<parent#>` → `dev` PR is Phase 4b-2.
   - `.agents/orchestrator/NOTES.md` (this section)
 - Push: `git push origin dev` (no `-i`, no `--force`/forced update, no
   `--no-verify`).
-- Commit SHA + push result: see the task report / the following notes-only
-  commit (SHA unknowable before commit, so recorded there, not invented here).
+- Commit SHA + push result: `693439f` — `git push origin dev` OK
+  (`8036bac..693439f  dev -> dev`). This notes-record entry is a second,
+  notes-only commit (its own SHA is recorded post-push, not invented here).
 
 ## Open risks / follow-ups
 
