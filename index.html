@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Farih Muhammad - RPG Portfolio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Title Screen -->
+    <div id="title-screen" class="title-screen active">
+        <div class="title-content">
+            <h1 class="title-text">FARIH'S AI VILLAGE</h1>
+            <p class="title-subtitle">A Portfolio Adventure</p>
+            <div class="title-character"></div>
+            <p class="start-prompt">PRESS ENTER OR CLICK TO START</p>
+        </div>
+    </div>
+
+    <!-- Map View -->
+    <div id="map-view" class="map-view">
+        <div class="map-hud">
+            <div class="hud-left">
+                <span class="hud-name">Farih</span>
+                <span class="hud-title">Front End Engineer</span>
+            </div>
+            <div class="hud-right">
+                <span class="hud-quests">Quests: <span id="quest-count">0</span>/6</span>
+            </div>
+        </div>
+
+        <div class="world">
+            <!-- Ground -->
+            <div class="ground">
+                <div class="grass-patch" style="left:10%;top:20%"></div>
+                <div class="grass-patch" style="left:80%;top:60%"></div>
+                <div class="grass-patch" style="left:45%;top:85%"></div>
+                <div class="grass-patch" style="left:90%;top:30%"></div>
+                <div class="grass-patch" style="left:5%;top:70%"></div>
+                <div class="tree" style="left:3%;top:15%"></div>
+                <div class="tree" style="left:95%;top:45%"></div>
+                <div class="tree" style="left:15%;top:90%"></div>
+                <div class="tree" style="left:88%;top:85%"></div>
+            </div>
+
+            <!-- Buildings -->
+            <div class="building home-house" data-section="about" data-name="Home House" style="left:10%;top:25%">
+                <div class="building-roof"></div>
+                <div class="building-body">
+                    <div class="building-window left-window"></div>
+                    <div class="building-window right-window"></div>
+                    <div class="building-door">
+                        <div class="door-knob"></div>
+                    </div>
+                </div>
+                <div class="building-sign">HOME</div>
+                <div class="building-label">About</div>
+            </div>
+
+            <div class="building training-ground" data-section="skills" data-name="Training Ground" style="left:38%;top:15%">
+                <div class="building-base"></div>
+                <div class="training-target"></div>
+                <div class="training-target target-2"></div>
+                <div class="training-sign">TRAIN</div>
+                <div class="building-label">Skills</div>
+            </div>
+
+            <div class="building quest-board" data-section="experience" data-name="Quest Board" style="left:65%;top:20%">
+                <div class="board-post"></div>
+                <div class="board-plank"></div>
+                <div class="board-notice"></div>
+                <div class="board-notice notice-2"></div>
+                <div class="board-notice notice-3"></div>
+                <div class="building-label">Experience</div>
+            </div>
+
+            <div class="building treasure-vault" data-section="projects" data-name="Treasure Vault" style="left:25%;top:55%">
+                <div class="vault-base"></div>
+                <div class="vault-door"></div>
+                <div class="vault-lock"></div>
+                <div class="vault-glow"></div>
+                <div class="building-label">Projects</div>
+            </div>
+
+            <div class="building signal-tower" data-section="contact" data-name="Signal Tower" style="left:72%;top:60%">
+                <div class="tower-base"></div>
+                <div class="tower-mid"></div>
+                <div class="tower-top"></div>
+                <div class="tower-antenna"></div>
+                <div class="tower-signal"></div>
+                <div class="tower-signal signal-2"></div>
+                <div class="building-label">Contact</div>
+            </div>
+
+            <!-- AI Lab Building -->
+            <div class="building ai-lab" data-section="ai-lab" data-name="AI Lab" style="left:48%;top:42%">
+                <div class="lab-base"></div>
+                <div class="lab-glow"></div>
+                <div class="lab-screen"></div>
+                <div class="lab-particles">
+                    <div class="particle p1"></div>
+                    <div class="particle p2"></div>
+                    <div class="particle p3"></div>
+                </div>
+                <div class="building-sign">AI LAB</div>
+                <div class="building-label">AI Agents</div>
+            </div>
+
+            <!-- Character -->
+            <div id="character" class="character">
+                <div class="char-body"></div>
+                <div class="char-head"></div>
+                <div class="char-eye"></div>
+                <div class="char-hair"></div>
+                <div class="char-legs">
+                    <div class="char-leg left-leg"></div>
+                    <div class="char-leg right-leg"></div>
+                </div>
+            </div>
+
+            <!-- AI Agent NPCs -->
+            <div class="npc" data-npc="codebot" style="left:20%;top:40%">
+                <div class="npc-bubble">Reviewing PR #42...</div>
+                <div class="npc-body"></div>
+                <div class="npc-head"></div>
+                <div class="npc-eye"></div>
+                <div class="npc-label">CodeBot</div>
+                <div class="npc-role">Code Review Agent</div>
+            </div>
+
+            <div class="npc" data-npc="docbot" style="left:55%;top:45%">
+                <div class="npc-bubble">Writing README.md...</div>
+                <div class="npc-body"></div>
+                <div class="npc-head"></div>
+                <div class="npc-eye"></div>
+                <div class="npc-label">DocWriter</div>
+                <div class="npc-role">Documentation Agent</div>
+            </div>
+
+            <div class="npc" data-npc="databot" style="left:80%;top:35%">
+                <div class="npc-bubble">Analyzing data...</div>
+                <div class="npc-body"></div>
+                <div class="npc-head"></div>
+                <div class="npc-eye"></div>
+                <div class="npc-label">DataBot</div>
+                <div class="npc-role">Data Analysis Agent</div>
+            </div>
+
+            <div class="npc" data-npc="designbot" style="left:40%;top:70%">
+                <div class="npc-bubble">Designing UI...</div>
+                <div class="npc-body"></div>
+                <div class="npc-head"></div>
+                <div class="npc-eye"></div>
+                <div class="npc-label">DesignBot</div>
+                <div class="npc-role">Design Assistant Agent</div>
+            </div>
+
+            <div class="npc" data-npc="chatbot" style="left:65%;top:75%">
+                <div class="npc-bubble">Answering queries...</div>
+                <div class="npc-body"></div>
+                <div class="npc-head"></div>
+                <div class="npc-eye"></div>
+                <div class="npc-label">ChatBot</div>
+                <div class="npc-role">Support Agent</div>
+            </div>
+        </div>
+
+        <!-- Achievement Badges -->
+        <div id="badges" class="badges">
+            <div class="badge" data-badge="about" title="Home Found"></div>
+            <div class="badge" data-badge="skills" title="Training Complete"></div>
+            <div class="badge" data-badge="experience" title="Quests Done"></div>
+            <div class="badge" data-badge="projects" title="Treasures Found"></div>
+            <div class="badge" data-badge="contact" title="Signal Sent"></div>
+        </div>
+
+        <!-- Controls hint -->
+        <div class="controls-hint">
+            <span class="key">←</span><span class="key">→</span><span class="key">↑</span><span class="key">↓</span> Move &nbsp;|&nbsp; <span class="key">Enter</span> Enter Building &nbsp;|&nbsp; <span class="key">Esc</span> Exit
+        </div>
+    </div>
+
+    <!-- Interior Sections -->
+    <div id="interior-about" class="interior" data-section="about">
+        <div class="interior-header">
+            <button class="back-btn" data-back="map">← Back to Map</button>
+            <h2 class="section-title">Home House - About</h2>
+        </div>
+        <div class="interior-content pixel-room">
+            <div class="room-bg"></div>
+            <div class="about-desk">
+                <div class="monitor">
+                    <div class="monitor-screen">
+                        <div class="screen-text">Hello!</div>
+                        <div class="screen-cursor">_</div>
+                    </div>
+                </div>
+                <div class="monitor-stand"></div>
+                <div class="keyboard"></div>
+            </div>
+            <div class="about-info">
+                <h3 class="pixel-heading">Farih Muhammad</h3>
+                <p class="pixel-subtitle">Front End Engineer | Web, Mobile & Interactive</p>
+                <div class="pixel-divider"></div>
+                <p class="pixel-text">Hi, I'm Farih — a Front End Engineer who builds reliable, user-focused products across web, mobile, and interactive apps. Professional FrontEnd Developer since 2016.</p>
+                <div class="stats-box">
+                    <div class="stat">
+                        <span class="stat-label">Class</span>
+                        <span class="stat-value">Engineer</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">Level</span>
+                        <span class="stat-value">Senior</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-label">EXP</span>
+                        <span class="stat-value">10+ Years (2016-Present)</span>
+                    </div>
+                </div>
+                <a href="https://1drv.ms/b/s!AiTZSVCh7Q6Dj1FzL8uA1lAY69xC?e=12sK6B" target="_blank" class="contact-link">My Resume</a>
+            </div>
+        </div>
+    </div>
+
+    <div id="interior-skills" class="interior" data-section="skills">
+        <div class="interior-header">
+            <button class="back-btn" data-back="map">← Back to Map</button>
+            <h2 class="section-title">Training Ground - Skills</h2>
+        </div>
+        <div class="interior-content pixel-room">
+            <div class="skills-grid">
+                <div class="skill-category">
+                    <h3 class="category-title">Frontend</h3>
+                    <div class="skill-bar" data-skill="React" data-level="90"><span class="skill-name">React</span><div class="bar-bg"><div class="bar-fill" style="width:90%"></div></div></div>
+                    <div class="skill-bar" data-skill="Next.js" data-level="85"><span class="skill-name">Next.js</span><div class="bar-bg"><div class="bar-fill" style="width:85%"></div></div></div>
+                    <div class="skill-bar" data-skill="TypeScript" data-level="88"><span class="skill-name">TypeScript</span><div class="bar-bg"><div class="bar-fill" style="width:88%"></div></div></div>
+                    <div class="skill-bar" data-skill="Redux Toolkit" data-level="80"><span class="skill-name">Redux Toolkit</span><div class="bar-bg"><div class="bar-fill" style="width:80%"></div></div></div>
+                    <div class="skill-bar" data-skill="Tailwind CSS" data-level="92"><span class="skill-name">Tailwind CSS</span><div class="bar-bg"><div class="bar-fill" style="width:92%"></div></div></div>
+                    <div class="skill-bar" data-skill="React Native" data-level="78"><span class="skill-name">React Native</span><div class="bar-bg"><div class="bar-fill" style="width:78%"></div></div></div>
+                </div>
+                <div class="skill-category">
+                    <h3 class="category-title">Web & Realtime</h3>
+                    <div class="skill-bar" data-skill="HTML/CSS/JS" data-level="90"><span class="skill-name">HTML/CSS/JS</span><div class="bar-bg"><div class="bar-fill" style="width:90%"></div></div></div>
+                    <div class="skill-bar" data-skill="Bootstrap/jQuery" data-level="85"><span class="skill-name">Bootstrap/jQuery</span><div class="bar-bg"><div class="bar-fill" style="width:85%"></div></div></div>
+                    <div class="skill-bar" data-skill="Socket.IO/SSE" data-level="80"><span class="skill-name">Socket.IO/SSE</span><div class="bar-bg"><div class="bar-fill" style="width:80%"></div></div></div>
+                    <div class="skill-bar" data-skill="Node.js" data-level="82"><span class="skill-name">Node.js</span><div class="bar-bg"><div class="bar-fill" style="width:82%"></div></div></div>
+                </div>
+                <div class="skill-category">
+                    <h3 class="category-title">Quality & Delivery</h3>
+                    <div class="skill-bar" data-skill="Vitest/Testing Library" data-level="78"><span class="skill-name">Vitest/Testing Library</span><div class="bar-bg"><div class="bar-fill" style="width:78%"></div></div></div>
+                    <div class="skill-bar" data-skill="ESLint/SonarQube" data-level="80"><span class="skill-name">ESLint/SonarQube</span><div class="bar-bg"><div class="bar-fill" style="width:80%"></div></div></div>
+                    <div class="skill-bar" data-skill="Git/GitHub/GitLab" data-level="88"><span class="skill-name">Git/GitHub/GitLab</span><div class="bar-bg"><div class="bar-fill" style="width:88%"></div></div></div>
+                    <div class="skill-bar" data-skill="MSAL/Azure AD Auth" data-level="82"><span class="skill-name">MSAL/Azure AD Auth</span><div class="bar-bg"><div class="bar-fill" style="width:82%"></div></div></div>
+                </div>
+                <div class="skill-category">
+                    <h3 class="category-title">Creative & Engines</h3>
+                    <div class="skill-bar" data-skill="Unity/C#" data-level="75"><span class="skill-name">Unity/C#</span><div class="bar-bg"><div class="bar-fill" style="width:75%"></div></div></div>
+                    <div class="skill-bar" data-skill="Inkscape/Illustrator" data-level="70"><span class="skill-name">Inkscape/Illustrator</span><div class="bar-bg"><div class="bar-fill" style="width:70%"></div></div></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="interior-experience" class="interior" data-section="experience">
+        <div class="interior-header">
+            <button class="back-btn" data-back="map">← Back to Map</button>
+            <h2 class="section-title">Quest Board - Experience</h2>
+        </div>
+        <div class="interior-content pixel-room">
+            <div class="quest-timeline">
+                <div class="quest-card">
+                    <div class="quest-status completed"></div>
+                    <div class="quest-info">
+                        <h3 class="quest-title">Appfuxion Consulting Indonesia</h3>
+                        <p class="quest-period">May 2023 - Present, Jakarta</p>
+                        <p class="quest-desc">Build and maintain production React/Next.js + TypeScript apps. Azure AD (MSAL) auth, real-time Socket.IO/SSE experiences, QA collaboration.</p>
+                        <div class="quest-rewards">
+                            <span class="reward">React</span>
+                            <span class="reward">Next.js</span>
+                            <span class="reward">TypeScript</span>
+                            <span class="reward">Azure AD</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="quest-card">
+                    <div class="quest-status completed"></div>
+                    <div class="quest-info">
+                        <h3 class="quest-title">Creatella Venture</h3>
+                        <p class="quest-period">Apr 2021 - Apr 2023, Singapore Remote</p>
+                        <p class="quest-desc">Built startup products zero-to-launch. User-facing web/mobile features, reusable components, designer/backend collaboration, tests.</p>
+                        <div class="quest-rewards">
+                            <span class="reward">React Native</span>
+                            <span class="reward">React</span>
+                            <span class="reward">Mobile</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="quest-card">
+                    <div class="quest-status completed"></div>
+                    <div class="quest-info">
+                        <h3 class="quest-title">Freelancer</h3>
+                        <p class="quest-period">Aug 2020 - Apr 2021, Remote</p>
+                        <p class="quest-desc">Delivered web/mobile solutions, third-party APIs, cross-browser/device troubleshooting, maintenance.</p>
+                        <div class="quest-rewards">
+                            <span class="reward">JavaScript</span>
+                            <span class="reward">React Native</span>
+                            <span class="reward">Freelance</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="quest-card">
+                    <div class="quest-status completed"></div>
+                    <div class="quest-info">
+                        <h3 class="quest-title">Plexus Studio</h3>
+                        <p class="quest-period">Mar 2018 - Aug 2020, Bandung</p>
+                        <p class="quest-desc">Interactive products across games/web/mobile/AR/VR. API integration, responsive UI, Unity AR.</p>
+                        <div class="quest-rewards">
+                            <span class="reward">Unity</span>
+                            <span class="reward">JavaScript</span>
+                            <span class="reward">AR</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="quest-card">
+                    <div class="quest-status completed"></div>
+                    <div class="quest-info">
+                        <h3 class="quest-title">Gema Cipta Piranti (GCP)</h3>
+                        <p class="quest-period">Mar 2016 - May 2017, Bandung</p>
+                        <p class="quest-desc">Front-end modules for school lab management system. CRUD, validation, dashboard UI.</p>
+                        <div class="quest-rewards">
+                            <span class="reward">HTML/CSS</span>
+                            <span class="reward">JavaScript</span>
+                            <span class="reward">jQuery</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="interior-projects" class="interior" data-section="projects">
+        <div class="interior-header">
+            <button class="back-btn" data-back="map">← Back to Map</button>
+            <h2 class="section-title">Treasure Vault - Projects</h2>
+        </div>
+        <div class="interior-content pixel-room">
+            <div class="projects-grid">
+                <div class="project-card">
+                    <div class="project-icon">
+                        <div class="pixel-phone"></div>
+                    </div>
+                    <h3 class="project-title">MySLife Mobile App (2022, Creatella)</h3>
+                    <p class="project-desc">Social curated content/community mobile app + admin web. React Native + React.</p>
+                    <div class="project-tags">
+                        <span class="tag">React Native</span>
+                        <span class="tag">Mobile</span>
+                    </div>
+                    <a href="https://myslife.co/" target="_blank" class="contact-link">View Details</a>
+                </div>
+                <div class="project-card">
+                    <div class="project-icon">
+                        <div class="pixel-globe"></div>
+                    </div>
+                    <h3 class="project-title">Profile Web (2021-Present)</h3>
+                    <p class="project-desc">Personal Hugo + Toha portfolio. Clean structure, performance.</p>
+                    <div class="project-tags">
+                        <span class="tag">Hugo</span>
+                        <span class="tag">Web</span>
+                    </div>
+                    <a href="https://kangfarih.github.io/portfolios/profile-web/" target="_blank" class="contact-link">View Details</a>
+                </div>
+                <div class="project-card">
+                    <div class="project-icon">
+                        <div class="pixel-dashboard"></div>
+                    </div>
+                    <h3 class="project-title">General Admin Demo (2020-Present)</h3>
+                    <p class="project-desc">Admin dashboard demo. Express, MongoDB, Bootstrap gentelella, jQuery.</p>
+                    <div class="project-tags">
+                        <span class="tag">Express</span>
+                        <span class="tag">MongoDB</span>
+                        <span class="tag">Bootstrap</span>
+                    </div>
+                </div>
+                <div class="project-card">
+                    <div class="project-icon">
+                        <div class="pixel-play"></div>
+                    </div>
+                    <h3 class="project-title">Interactive Web Video (2020, DreamTechnology)</h3>
+                    <p class="project-desc">Clickable hotspots video player. jQuery + vanilla JS, Safari/iOS compat.</p>
+                    <div class="project-tags">
+                        <span class="tag">jQuery</span>
+                        <span class="tag">JavaScript</span>
+                    </div>
+                    <a href="https://sdm.kemdikbud.go.id/video-interaktif/" target="_blank" class="contact-link">View Details</a>
+                </div>
+                <div class="project-card">
+                    <div class="project-icon">
+                        <div class="pixel-phone"></div>
+                    </div>
+                    <h3 class="project-title">Company Profile Web (2019, Plexus)</h3>
+                    <p class="project-desc">Responsive profiles: VDP, Indessota, Natraco, 8Villages.</p>
+                    <div class="project-tags">
+                        <span class="tag">jQuery</span>
+                        <span class="tag">Web</span>
+                    </div>
+                </div>
+                <div class="project-card">
+                    <div class="project-icon">
+                        <div class="pixel-globe"></div>
+                    </div>
+                    <h3 class="project-title">Augmented Reality Apps (2020, First4Figures/Plexus)</h3>
+                    <p class="project-desc">Unity + C# AR product visualizer + admin web.</p>
+                    <div class="project-tags">
+                        <span class="tag">Unity</span>
+                        <span class="tag">AR</span>
+                    </div>
+                </div>
+                <div class="project-card">
+                    <div class="project-icon">
+                        <div class="pixel-dashboard"></div>
+                    </div>
+                    <h3 class="project-title">Casual Game Prototype (2020)</h3>
+                    <p class="project-desc">Unity mobile game prototype, rapid iteration with designers.</p>
+                    <div class="project-tags">
+                        <span class="tag">Unity</span>
+                        <span class="tag">Game</span>
+                    </div>
+                </div>
+                <div class="project-card">
+                    <div class="project-icon">
+                        <div class="pixel-play"></div>
+                    </div>
+                    <h3 class="project-title">Ragasukma Comic (2020, Plexus)</h3>
+                    <p class="project-desc">Digital comics reader/purchase app on Play Store. React Native + admin.</p>
+                    <div class="project-tags">
+                        <span class="tag">React Native</span>
+                        <span class="tag">Mobile</span>
+                    </div>
+                    <a href="https://play.google.com/store/apps/details?id=id.plexus.ragasukmacomicapp" target="_blank" class="contact-link">View Details</a>
+                </div>
+                <div class="project-card">
+                    <div class="project-icon">
+                        <div class="pixel-phone"></div>
+                    </div>
+                    <h3 class="project-title">Encrypted Audio Player (2019, Freelance)</h3>
+                    <p class="project-desc">Secure encrypted audio player. React Native user+admin apps.</p>
+                    <div class="project-tags">
+                        <span class="tag">React Native</span>
+                        <span class="tag">Mobile</span>
+                    </div>
+                    <a href="https://play.google.com/store/apps/details?id=com.ajtencryptedplayer" target="_blank" class="contact-link">View Details</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="interior-contact" class="interior" data-section="contact">
+        <div class="interior-header">
+            <button class="back-btn" data-back="map">← Back to Map</button>
+            <h2 class="section-title">Signal Tower - Contact</h2>
+        </div>
+        <div class="interior-content pixel-room">
+            <div class="contact-grid">
+                <div class="contact-card">
+                    <div class="contact-icon pixel-mail"></div>
+                    <h3 class="contact-label">Email</h3>
+                    <a href="mailto:farihul.ibad@gmail.com" class="contact-link">farihul.ibad@gmail.com</a>
+                </div>
+                <div class="contact-card">
+                    <div class="contact-icon pixel-github"></div>
+                    <h3 class="contact-label">GitHub</h3>
+                    <a href="https://github.com/kangfarih" class="contact-link" target="_blank">github.com/kangfarih</a>
+                </div>
+                <div class="contact-card">
+                    <div class="contact-icon pixel-linkedin"></div>
+                    <h3 class="contact-label">LinkedIn</h3>
+                    <a href="https://www.linkedin.com/in/kangfarih/" class="contact-link" target="_blank">linkedin.com/in/kangfarih</a>
+                </div>
+                <div class="contact-card">
+                    <div class="contact-icon pixel-github"></div>
+                    <h3 class="contact-label">GitLab</h3>
+                    <a href="https://www.gitlab.com/kangfarih" class="contact-link" target="_blank">gitlab.com/kangfarih</a>
+                </div>
+                <div class="contact-card">
+                    <div class="contact-icon pixel-mail"></div>
+                    <h3 class="contact-label">Resume</h3>
+                    <a href="https://1drv.ms/b/s!AiTZSVCh7Q6Dj1FzL8uA1lAY69xC?e=12sK6B" class="contact-link" target="_blank">My Resume</a>
+                </div>
+            </div>
+            <div class="signal-animation">
+                <div class="signal-wave"></div>
+                <div class="signal-wave wave-2"></div>
+                <div class="signal-wave wave-3"></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="interior-ai-lab" class="interior" data-section="ai-lab">
+        <div class="interior-header">
+            <button class="back-btn" data-back="map">← Back to Map</button>
+            <h2 class="section-title">AI Lab - Agent Dashboard</h2>
+        </div>
+        <div class="interior-content pixel-room">
+            <div class="ai-lab-intro">
+                <p class="pixel-text">Real toolkit behind Farih's work — mapped from live portfolio skills.</p>
+            </div>
+            <div class="ai-agents-grid">
+                <div class="ai-agent-card" data-agent="codebot">
+                    <div class="agent-icon">🔍</div>
+                    <h3 class="agent-name">Frontend Engineering</h3>
+                    <p class="agent-status">● Active</p>
+                    <p class="agent-task">Next.js / React / TS production apps</p>
+                    <div class="agent-bar"><div class="agent-bar-fill" style="width:90%"></div></div>
+                    <span class="agent-stat">90% accuracy</span>
+                </div>
+                <div class="ai-agent-card" data-agent="docbot">
+                    <div class="agent-icon">📝</div>
+                    <h3 class="agent-name">Delivery & Quality</h3>
+                    <p class="agent-status">● Active</p>
+                    <p class="agent-task">Vitest / ESLint / SonarQube / Git</p>
+                    <div class="agent-bar"><div class="agent-bar-fill" style="width:88%"></div></div>
+                    <span class="agent-stat">88% accuracy</span>
+                </div>
+                <div class="ai-agent-card" data-agent="databot">
+                    <div class="agent-icon">📊</div>
+                    <h3 class="agent-name">Realtime & Backend</h3>
+                    <p class="agent-status">● Active</p>
+                    <p class="agent-task">Socket.IO / SSE / Node experiences</p>
+                    <div class="agent-bar"><div class="agent-bar-fill" style="width:82%"></div></div>
+                    <span class="agent-stat">82% accuracy</span>
+                </div>
+                <div class="ai-agent-card" data-agent="designbot">
+                    <div class="agent-icon">🎨</div>
+                    <h3 class="agent-name">Mobile & Games</h3>
+                    <p class="agent-status">● Active</p>
+                    <p class="agent-task">React Native / Unity builds</p>
+                    <div class="agent-bar"><div class="agent-bar-fill" style="width:78%"></div></div>
+                    <span class="agent-stat">78% accuracy</span>
+                </div>
+                <div class="ai-agent-card" data-agent="chatbot">
+                    <div class="agent-icon">💬</div>
+                    <h3 class="agent-name">Auth & Design</h3>
+                    <p class="agent-status">● Active</p>
+                    <p class="agent-task">MSAL auth / Inkscape assets</p>
+                    <div class="agent-bar"><div class="agent-bar-fill" style="width:82%"></div></div>
+                    <span class="agent-stat">82% accuracy</span>
+                </div>
+            </div>
+            <div class="ai-lab-footer">
+                <p class="pixel-subtitle">Building the future with AI-powered development</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- NPC Profile Modal -->
+    <div id="npc-modal" class="npc-modal">
+        <div class="npc-modal-content">
+            <button class="npc-modal-close">&times;</button>
+            <div class="npc-modal-avatar" id="npc-modal-avatar"></div>
+            <h3 class="npc-modal-name" id="npc-modal-name"></h3>
+            <p class="npc-modal-role" id="npc-modal-role"></p>
+            <div class="npc-modal-divider"></div>
+            <p class="npc-modal-desc" id="npc-modal-desc"></p>
+            <div class="npc-modal-skills" id="npc-modal-skills"></div>
+            <div class="npc-modal-status">
+                <span class="status-dot"></span>
+                <span id="npc-modal-status">Active</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Transition overlay -->
+    <div id="transition" class="transition"></div>
+
+    <script src="script.js"></script>
+</body>
+</html>
