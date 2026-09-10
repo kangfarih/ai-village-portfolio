@@ -90,7 +90,7 @@ jobs:
               --system-file /tmp/orchestrator_system.txt \
               --user-file /tmp/orchestrator_user.txt \
               --out goals.json \
-              --schema 'type=="array" and length>0' \
+              --schema 'type=="array" and length>0 and all(.[]; type=="object" and (.title|type=="string") and (.title|length>0) and (.detail|type=="string"))' \
               --effort high; then
             gh issue comment "$ISSUE_NUMBER" --body "<!-- orchestrator:v1-error -->
           Orchestrator LLM failed after retries; no goals were created. Re-apply the \`ai-orchestrate\` label to retry."
@@ -107,26 +107,40 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          COUNT="$(jq '[.[:6][]] | length' goals.json)"
-          if [ "$COUNT" -eq 0 ]; then
-            echo "No goals to delegate - exiting without changes."
-            exit 0
+
+          # Per-element contract guard: verify BEFORE creating anything. This is
+          # the same contract passed to llm_json.sh --schema, re-checked here so a
+          # stale/partial goals.json can never create malformed sub-issues.
+          if ! jq -e 'type=="array" and length>0 and all(.[]; type=="object" and (.title|type=="string") and (.title|length>0) and (.detail|type=="string"))' goals.json >/dev/null 2>&1; then
+            gh issue comment "$ISSUE_NUMBER" --body "<!-- orchestrator:v1-error -->
+          Orchestrator aborted before creating any goal: \`goals.json\` did not match the per-element contract (each item must be an object with a non-empty string \`title\` and a string \`detail\`). Re-apply the \`ai-orchestrate\` label to retry."
+            echo "::error::goals.json failed the per-element contract; no goals created"
+            exit 1
           fi
 
-          # Dedupe against any ai-goal sub-issues already referencing this parent.
-          EXISTING="$(gh issue list --label ai-goal --state all \
+          # Any later error (existing-goal lookup or create) must leave a visible
+          # signal on the parent, then exit non-zero. No silent partial runs.
+          on_error() {
+            local code=$?
+            trap - ERR
+            gh issue comment "$ISSUE_NUMBER" --body "<!-- orchestrator:v1-error -->
+          Orchestrator failed while delegating goals (exit ${code}); no further goals were created. Goals already created are kept - re-applying the \`ai-orchestrate\` label will skip them and create only the missing ones." || true
+            echo "::error::orchestrator delegation failed (exit ${code})"
+            exit "$code"
+          }
+          trap on_error ERR
+
+          COUNT="$(jq '[.[:6][]] | length' goals.json)"
+
+          # Individual-title dedupe: fetch every [GOAL] issue already pointing at
+          # this parent. A query failure is LOUD (no `|| true`), never treated as
+          # "no existing goals", so partial runs are recovered per goal.
+          EXISTING_JSON="$(gh issue list --label ai-goal --state all \
             --search "in:title \"from #${ISSUE_NUMBER}\"" \
-            --json title --jq '.[].title' || true)"
-          EXISTING_COUNT="$(printf '%s\n' "$EXISTING" | sed '/^$/d' | wc -l | tr -d ' ')"
+            --json title,url)"
+          EXISTING_TITLES="$(printf '%s' "$EXISTING_JSON" | jq -r '.[].title')"
           MARKER="$(gh issue view "$ISSUE_NUMBER" --json comments \
             --jq '[.comments[].body] | join("\n") | contains("<!-- orchestrator:v1 -->")')"
-
-          # Fully orchestrated only when the marker AND at least one goal exist.
-          # A missing marker (partial prior run) falls through to per-goal dedupe.
-          if [ "$MARKER" = "true" ] && [ "$EXISTING_COUNT" -gt 0 ]; then
-            echo "already orchestrated (marker + ${EXISTING_COUNT} goal(s)), skipping"
-            exit 0
-          fi
 
           : > /tmp/goal_links.md
           CREATED=0
@@ -134,25 +148,33 @@ jobs:
             TITLE="$(jq -r ".[$i].title" goals.json)"
             DETAIL="$(jq -r ".[$i].detail" goals.json)"
             SUB_TITLE="[GOAL] ${TITLE} (from #${ISSUE_NUMBER})"
-            if [ -n "$EXISTING" ] && printf '%s\n' "$EXISTING" | grep -Fqx "$SUB_TITLE"; then
+            if grep -Fqx -- "$SUB_TITLE" <<< "$EXISTING_TITLES"; then
+              URL="$(jq -r --arg t "$SUB_TITLE" 'first(.[] | select(.title == $t) | .url) // ""' <<< "$EXISTING_JSON")"
+              printf '%s\n' "- ${SUB_TITLE} - ${URL} _(existing)_" >> /tmp/goal_links.md
               echo "Skipping existing goal: ${SUB_TITLE}"
               continue
             fi
             SUB_BODY="$(printf '%s\n\nParent: #%s\nAcceptance: post result as comment + link evidence.' "$DETAIL" "$ISSUE_NUMBER")"
-            URL="$(gh issue create --title "$SUB_TITLE" --body "$SUB_BODY" --label "ai-goal" --json url --jq '.url')"
+            URL="$(gh issue create --title "$SUB_TITLE" --body "$SUB_BODY" --label "ai-goal" --label "goal/tl")"
             printf '%s\n' "- ${SUB_TITLE} - ${URL}" >> /tmp/goal_links.md
             CREATED=$((CREATED + 1))
             echo "Created: ${URL}"
           done
 
-          {
-            printf '<!-- orchestrator:v1 -->\n'
-            printf 'Orchestrator broke this issue into %s goal(s) (created %s this run):\n\n' "$COUNT" "$CREATED"
-            if [ -s /tmp/goal_links.md ]; then
-              cat /tmp/goal_links.md
-            else
-              printf '_All goals already existed; nothing new created._\n'
-            fi
-            printf '\nAgent: pure GitHub workflow agent | Model: thinkingmachines/inkling:free\n'
-          } | gh issue comment "$ISSUE_NUMBER" --body-file -
+          # Success marker only when not already present; label added last, after
+          # the delegation has fully succeeded.
+          if [ "$MARKER" != "true" ]; then
+            {
+              printf '<!-- orchestrator:v1 -->\n'
+              printf 'Orchestrator broke this issue into %s goal(s) (created %s this run):\n\n' "$COUNT" "$CREATED"
+              if [ -s /tmp/goal_links.md ]; then
+                cat /tmp/goal_links.md
+              else
+                printf '_All goals already existed; nothing new created._\n'
+              fi
+              printf '\nAgent: pure GitHub workflow agent | Model: thinkingmachines/inkling:free\n'
+            } | gh issue comment "$ISSUE_NUMBER" --body-file -
+          else
+            echo "orchestrator marker already present; skipping summary comment"
+          fi
           gh issue edit "$ISSUE_NUMBER" --add-label "triage/accepted"

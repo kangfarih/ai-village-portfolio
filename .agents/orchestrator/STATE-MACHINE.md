@@ -32,8 +32,10 @@ Rules:
 
 ## 2. Goal-issue state machine
 
-A **goal issue** is a sub-issue labeled `ai-goal` created by the PO for a
-parent (`ai-orchestrate`) issue.
+A **goal issue** is a sub-issue created by the PO for a parent
+(`ai-orchestrate`) issue. It carries BOTH `ai-goal` (the orchestrator's own
+bookkeeping label) and `goal/tl` (the TL workflow's entry trigger), so a
+freshly created goal is picked up by the TL immediately.
 
 ```
 ai-goal
@@ -70,6 +72,30 @@ Transitions (each is an issue-label edit by the workflow that owns the step):
 | `goal/review` | `goal/revise` | PO | verdict REVISE |
 | `goal/revise` | `goal/tl` | PO | revision queued, attempt+1 |
 
+### Goal creation (PO)
+
+The orchestrator creates sub-issues titled `[GOAL] <title> (from #<parent>)`:
+
+- **Labels applied:** `ai-goal` **and** `goal/tl`. `ai-goal` is the
+  orchestrator's bookkeeping label; `goal/tl` hands the goal to the TL workflow.
+- **Cap 6 goals** per parent (the LLM is asked for 3–6; the loop slices `[:6]`).
+- **Per-title dedupe:** before creating, the PO lists existing `ai-goal` issues
+  whose title contains `from #<parent>` and skips any whose expected title is
+  already present. Dedupe is per goal, so a partial prior run or a later-deleted
+  goal is recovered without duplicating the rest. A failed lookup is a loud
+  failure (no `|| true`), never treated as "no existing goals".
+- **Loud failure:** any failure before/while creating goals posts a parent
+  comment beginning `<!-- orchestrator:v1-error -->` and exits non-zero.
+  `triage/accepted` is added to the parent only at the very end, after success.
+
+### Upstream triage labels (owned by triage, NOT the goal loop)
+
+`triage/accepted`, `priority/important-soon`, and `kind/task` are **triage-owned**
+labels applied by `agent-triage`. The goal loop never sets
+`priority/important-soon` or `kind/task`; its only use of `triage/accepted` is as
+a parent completion signal added *after* successful delegation. Do not treat
+these as goal-state labels.
+
 ### Caps
 
 - `MAX_REVISE=3`.
@@ -104,6 +130,7 @@ No auto-close — a human closes the parent.
 | PO verdict | `<!-- verdict:v1 -->` | issue comment |
 | Revision counter | `<!-- attempts:N -->` | issue comment |
 | Orchestrator run | `<!-- orchestrator:v1 -->` | parent comment |
+| Orchestrator failure | `<!-- orchestrator:v1-error -->` | parent comment |
 
 Justification (vs a committed state file):
 

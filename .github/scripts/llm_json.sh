@@ -73,6 +73,12 @@ case "$MAX_TOKENS" in
   ''|*[!0-9]*) fail "--max-tokens must be a non-negative integer" ;;
 esac
 
+# --effort, when supplied, must be one of the supported reasoning levels.
+case "$EFFORT_ARG" in
+  ''|low|medium|high) ;;
+  *) fail "--effort must be one of: low, medium, high" ;;
+esac
+
 [ -n "${OPENCODE_API_KEY:-}" ] || fail "OPENCODE_API_KEY is not set"
 
 MODEL="${MODEL:-thinkingmachines/inkling:free}"
@@ -174,38 +180,65 @@ retry_after() {
   case "${ra:-}" in
     ''|*[!0-9]*) return 0 ;;
   esac
-  if [ "$ra" -gt 60 ]; then
+  # Reject absurdly long values before any numeric comparison (they can overflow
+  # the shell's integer arithmetic), then cap the delay at 60s.
+  if [ "${#ra}" -gt 6 ]; then
+    ra=60
+  elif [ "$ra" -gt 60 ]; then
     ra=60
   fi
   printf '%s' "$ra"
 }
 
-# --- transport retry loop -------------------------------------------------
-BODY="$(build_body)"
-attempt=1
-while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
-  post "$BODY"
-  if [ "$HTTP_CODE" = "200" ]; then
-    echo "llm_json: HTTP 200 on attempt ${attempt}/${MAX_ATTEMPTS}" >&2
-    break
-  fi
-  if is_transport "$HTTP_CODE"; then
-    if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
-      SLEEP="$(retry_after)"
-      if [ -n "$SLEEP" ]; then
-        echo "llm_json: HTTP ${HTTP_CODE}; honoring Retry-After=${SLEEP}s (attempt ${attempt}/${MAX_ATTEMPTS})" >&2
-      else
-        SLEEP="$(backoff_for $(( attempt - 1 )))"
-        echo "llm_json: transport HTTP ${HTTP_CODE}; backoff ${SLEEP}s before attempt $(( attempt + 1 ))/${MAX_ATTEMPTS}" >&2
-      fi
-      sleep "$SLEEP"
-      attempt=$(( attempt + 1 ))
-      continue
+# Transport retry helper: POST $1 with jittered backoff / Retry-After, returning
+# 0 only on HTTP 200. Used for BOTH the primary call and the single semantic
+# correction, so a 429/5xx on the correction backs off/retries like the primary.
+# $2 = phase label for diagnostics. Non-retryable or exhausted transport fails
+# loudly via fail().
+post_with_retries() {
+  local body="$1" phase="${2:-primary}"
+  local attempt=1
+  while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
+    post "$body"
+    if [ "$HTTP_CODE" = "200" ]; then
+      echo "llm_json: HTTP 200 (${phase}) on attempt ${attempt}/${MAX_ATTEMPTS}" >&2
+      return 0
     fi
-    fail "transport failure HTTP ${HTTP_CODE} after ${attempt} attempt(s)"
+    if is_transport "$HTTP_CODE"; then
+      if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+        local delay
+        delay="$(retry_after)"
+        if [ -n "$delay" ]; then
+          echo "llm_json: HTTP ${HTTP_CODE} (${phase}); honoring Retry-After=${delay}s (attempt ${attempt}/${MAX_ATTEMPTS})" >&2
+        else
+          delay="$(backoff_for $(( attempt - 1 )))"
+          echo "llm_json: transport HTTP ${HTTP_CODE} (${phase}); backoff ${delay}s before attempt $(( attempt + 1 ))/${MAX_ATTEMPTS}" >&2
+        fi
+        sleep "$delay"
+        attempt=$(( attempt + 1 ))
+        continue
+      fi
+      fail "transport failure HTTP ${HTTP_CODE} (${phase}) after ${attempt} attempt(s)"
+    fi
+    fail "HTTP ${HTTP_CODE} is not retryable (${phase}, attempt ${attempt}/${MAX_ATTEMPTS})"
+  done
+}
+
+# Atomically write the schema-validated candidate to --out.
+write_out() {
+  local tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/llm_out.XXXXXX")"
+  if jq '.' "$CANDIDATE_FILE" > "$tmp"; then
+    mv "$tmp" "$OUT"
+  else
+    rm -f "$tmp"
+    return 1
   fi
-  fail "HTTP ${HTTP_CODE} is not retryable (attempt ${attempt}/${MAX_ATTEMPTS})"
-done
+}
+
+# --- primary call + transport retries -------------------------------------
+BODY="$(build_body)"
+post_with_retries "$BODY" "primary"
 
 # --- extract content ------------------------------------------------------
 CONTENT="$(jq -r '.choices[0].message.content // ""' "$BODY_FILE" 2>/dev/null || true)"
@@ -214,24 +247,23 @@ CONTENT="$(jq -r '.choices[0].message.content // ""' "$BODY_FILE" 2>/dev/null ||
 printf '%s' "$CONTENT" | sed '/^```/d' > "$CANDIDATE_FILE"
 
 if jq -e "$SCHEMA" "$CANDIDATE_FILE" >/dev/null 2>&1; then
-  jq '.' "$CANDIDATE_FILE" > "$OUT"
+  write_out || fail "failed to write validated JSON to ${OUT}"
   echo "llm_json: wrote validated JSON to ${OUT}" >&2
   exit 0
 fi
 
-# --- ONE semantic correction retry ---------------------------------------
+# --- ONE semantic correction retry (with its own transport retries) --------
 echo "llm_json: response failed schema validation; attempting one semantic correction" >&2
 CORRECTION_PROMPT="Your previous reply was not valid JSON matching the required schema. Reply with ONLY valid JSON, no markdown, no prose."
 BODY="$(build_body "$CONTENT" "$CORRECTION_PROMPT")"
-post "$BODY"
-[ "$HTTP_CODE" = "200" ] || fail "correction attempt returned HTTP ${HTTP_CODE}; no valid JSON produced"
+post_with_retries "$BODY" "correction"
 
 CONTENT="$(jq -r '.choices[0].message.content // ""' "$BODY_FILE" 2>/dev/null || true)"
 [ -n "$CONTENT" ] || fail "correction HTTP 200 but response contained no message content"
 
 printf '%s' "$CONTENT" | sed '/^```/d' > "$CANDIDATE_FILE"
 if jq -e "$SCHEMA" "$CANDIDATE_FILE" >/dev/null 2>&1; then
-  jq '.' "$CANDIDATE_FILE" > "$OUT"
+  write_out || fail "failed to write corrected validated JSON to ${OUT}"
   echo "llm_json: wrote corrected validated JSON to ${OUT}" >&2
   exit 0
 fi

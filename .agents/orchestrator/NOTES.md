@@ -238,3 +238,120 @@ refactor, so later role workflows share one contract.
   review role workflows (which consume them) are **not built in this task**.
 - `STATE-MACHINE.md` is a written contract; only the labels + PO path are
   executable so far. Any future workflow must match it exactly.
+
+---
+
+# Phase 1 review fixes (`dev` only — NEVER main)
+
+Findings from the Phase 1 foundation review, fixed across the 5 Phase 1 files.
+
+## B1 (blocking) — invalid `gh` flags on sub-issue creation
+
+`gh issue create` does **not** support `--json`/`--jq`; on success it prints the
+new issue URL to stdout. Fixed in `.github/workflows/agent-orchestrate.yml`:
+
+```bash
+URL="$(gh issue create --title "$SUB_TITLE" --body "$SUB_BODY" \
+  --label "ai-goal" --label "goal/tl")"
+```
+
+No `--parent` (unreliable across `gh` versions); the `Parent: #<N>` line stays in
+the body. This also fixes **W5**: goals now carry `goal/tl` as well as `ai-goal`,
+so the Phase-2 TL workflow (triggered by `goal/tl`) picks them up.
+
+## B2 (blocking) — per-element schema
+
+The orchestrator's `--schema` now requires every element to be an object with a
+non-empty string `title` and a string `detail`:
+
+```
+type=="array" and length>0 and all(.[]; type=="object" and (.title|type=="string") and (.title|length>0) and (.detail|type=="string"))
+```
+
+The Delegate step re-checks the same contract with `jq -e` **before** creating
+anything; on failure it posts a `<!-- orchestrator:v1-error -->` comment and
+`exit 1`.
+
+## W1/W2/W3 (blocking-ish) — dedupe + failure signalling
+
+- Removed the coarse `MARKER && EXISTING_COUNT>0` early skip. Each of the (≤6)
+  goals now has its expected title computed and is skipped only if an existing
+  `ai-goal` title already matches — so partial prior runs and deleted/re-created
+  goals are recovered individually.
+- Existing titles are fetched with `gh issue list --label ai-goal --state all
+  --search "in:title \"from #<N>\"" --json title,url` and **no `|| true`**: a
+  query failure is loud, never treated as "no existing goals".
+- The create loop is wrapped in an `ERR` trap that posts a parent comment
+  beginning `<!-- orchestrator:v1-error -->` (distinct from the success marker)
+  and exits non-zero on ANY failure.
+- The success marker `<!-- orchestrator:v1 -->` is posted only when not already
+  present; it lists created **and** existing goal links. `triage/accepted` is
+  added to the parent only at the very end, after full success.
+- Deviation worth noting: the existing-goal query fetches `--json title,url`
+  (rather than `title` only) so the summary comment can link existing goals too.
+
+## W4 — contract mismatch
+
+`.github/labels.yml` now lists the three labels the workflows create:
+`triage/accepted` (`0E8A16`, "Triage accepted, ready for work"),
+`priority/important-soon` (`0E8A16`, "Triage priority: needs staffing soon"),
+and `kind/task` (`1D76DB`, "Task or decision item"). `STATE-MACHINE.md` lists
+them as triage-owned upstream labels, explicitly not part of the goal loop.
+
+## W6/W7 — `.github/scripts/llm_json.sh` hardening
+
+- The single semantic-correction call now goes through the same
+  `post_with_retries` transport helper as the primary call, so a 429/5xx on the
+  correction backs off/retries. Still exactly ONE semantic correction.
+- `Retry-After` values longer than 6 digits are rejected before any numeric
+  comparison, then capped at 60s (avoids shell integer overflow).
+- `--effort` is validated against `low|medium|high` (empty allowed); anything
+  else is a loud rejection. `LLM_REASONING_EFFORT` remains an explicit override.
+- `--out` is written atomically: pretty-print to a `mktemp` file, then `mv` into
+  place (temp removed on failure).
+
+## STATE-MACHINE.md / NOTES.md
+
+Contract updated: goal creation applies `ai-goal` + `goal/tl`; the
+`<!-- orchestrator:v1-error -->` loud-failure marker is documented; the
+per-title dedupe rule and cap are stated; triage-owned labels called out. This
+section is the NOTES record.
+
+## Verification (pre-commit)
+
+- `ruby -ryaml -e "YAML.load_file(...)"` OK for `agent-orchestrate.yml` and
+  `labels.yml`.
+- `bash -n` OK for `llm_json.sh` and every extracted workflow `run:` block.
+- Mock `curl` (no live API) drove `llm_json.sh`: valid → exit 0 + atomic output;
+  503→200 transport retry; correction 503→200 retried then validated; correction
+  still invalid → 2 semantic calls + exit 1; `Retry-After: 1234567890123` clamped
+  to 60s; `--effort bogus` rejected before any call.
+- `jq -e` per-element schema exercised: good array passes; `["foo"]` and an
+  object missing `title` fail.
+- `git diff --stat` touched only the 5 Phase 1 paths.
+
+## Commit + push record (dev only — NEVER main)
+
+- Message: `fix(agents): correct gh issue create, per-element schema, idempotent delegation, loud failures`.
+- Files (ONLY these 5): `.github/workflows/agent-orchestrate.yml`,
+  `.github/scripts/llm_json.sh`, `.github/labels.yml`,
+  `.agents/orchestrator/STATE-MACHINE.md`, `.agents/orchestrator/NOTES.md`.
+- Push: `git push origin dev` (no `-i`, no `--force`, no `--no-verify`).
+- SHA + push result: recorded in the task report; a second notes-only commit is
+  allowed to record it (its own SHA recorded post-push, not invented here).
+
+## Open risks / follow-ups
+
+- **Live LLM still unverified**: these fixes are proven by YAML/`bash -n` parse,
+  mock transport tests, and `jq` schema tests only. The real OpenRouter path and
+  the actual `gh issue create`/`gh issue list` behaviour (including exact
+  `--search` matching) need a live `ai-orchestrate` trial with a valid key.
+- The existing-goal dedupe matches the full expected title exactly; if a human
+  edits a `[GOAL] … (from #N)` title, re-running may create a duplicate. The
+  cap of 6 limits the blast radius.
+- `gh issue list --search "in:title ..."` uses GitHub's search index; a freshly
+  created sub-issue from an earlier run could be briefly unindexed, risking a
+  duplicate on a rapid re-run (mitigated by the `agent-orchestrate-<n>`
+  concurrency group serializing runs).
+- Phase-2 TL / Programmer / review workflows do not exist yet; `goal/tl` is now
+  applied but nothing consumes it until they ship.
