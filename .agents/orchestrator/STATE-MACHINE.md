@@ -333,3 +333,66 @@ attempt that already has its marker short-circuits the LLM and only re-applies
 the transition. Repeated dispatches are therefore safe, and a failed hand-off
 can be retried by re-applying the role's entry label or re-running the
 workflow manually with `issue_number`.
+
+---
+
+## 9. Branch model (v1)
+
+All automated work happens on branches. **Agents never push `dev` or `main`,
+never force-push, and never merge to `dev`/`main`.** A human merges the final
+integration PR.
+
+### `issue/<parent#>` — integration branch
+
+- Cut from a **fresh `origin/dev`** by the PO (`agent-orchestrate`), once per
+  parent issue, before any goal is created.
+- Creation is idempotent: if `refs/heads/issue/<parent#>` already exists on
+  `origin`, the orchestrator skips creation. It never `--force`s.
+- Creation runs under the delegation step's `ERR` trap, so a failure posts the
+  loud `<!-- orchestrator:v1-error -->` parent comment and exits non-zero.
+- Every goal's work lands here (directly or by merge); the branch is the single
+  integration point for the parent.
+
+### `task/<goal#>` — per-goal branch
+
+- Cut by the **Programmer** from the goal's integration branch
+  `issue/<parent#>` when the goal is `goal/ready`.
+- The Programmer commits the goal's files to `task/<goal#>`, then auto-merges
+  `task/<goal#>` into `issue/<parent#>` with `--no-ff` and pushes the
+  integration branch. The goal's PR/merge target is the integration branch, not
+  `dev`.
+- **Contract only in Phase 4a:** the Programmer branch/merge implementation
+  lands in **Phase 4b**. This section is the frozen interface it must satisfy;
+  Phase 4a ships the orchestrator half (integration branch + `kind`) only.
+
+### Non-development goals
+
+Goals whose `kind` is `docs`, `analysis`, `requirement`, or `user-story` are
+non-development. They produce a **markdown artifact** committed to
+
+```
+.agents/issue-<parent#>/goal-<goal#>.md
+```
+
+on the integration branch `issue/<parent#>`, and change **no source code**.
+`kind: code` is the only kind that alters repository source/config/files.
+
+### Final integration PR
+
+When **every** child goal of a parent is `goal/done` (§3/§7), the review role
+opens **ONE** pull request `issue/<parent#>` → `dev` for human review and merge.
+The agent **never** merges that PR and **never** pushes `dev` or `main`; the
+human is the only actor who merges.
+
+### Hard rules
+
+- **No workflow edits by agents.** Agents must not modify
+  `.github/workflows/**` (privilege-escalation guard). This is enforced by the
+  Programmer in Phase 4b.
+- **No `dev`/`main` pushes, no force-push.** The only branches an agent may
+  push are `issue/<parent#>` and `task/<goal#>`.
+- **Permission note.** Branch creation and merge require job
+  `permissions: contents: write` (the orchestrator adds it in Phase 4a; the
+  Programmer needs it in Phase 4b). Opening the final PR requires
+  `pull-requests: write` for the review role. `issues: write` remains for labels
+  and comments, and `actions: write` for `workflow_dispatch` chaining (§8).

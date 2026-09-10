@@ -598,3 +598,113 @@ model traffic still goes through `.github/scripts/llm_json.sh`; no role inlines
   `agent-review-<n>` concurrency group serializes review runs per goal.
 - Free-model verdict quality/drift: the schema only constrains shape, not
   judgment; `missing[]` and `guidance` are advisory to the TL/Programmer.
+
+---
+
+# Phase 4a — branch isolation for the PO/orchestrator (`dev` only — NEVER main)
+
+First branch-model slice: the orchestrator now cuts a per-parent integration
+branch and classifies every goal with a `kind`, so downstream roles know
+code vs non-development. Only the PO half ships here; the Programmer branch/
+merge implementation is Phase 4b. All model traffic still goes through
+`.github/scripts/llm_json.sh` (unmodified).
+
+## What changed (ONLY these 3 files)
+
+- `.github/workflows/agent-orchestrate.yml`
+  - **`kind` classification**: the system prompt now demands
+    `{"title", "detail", "kind"}` per goal, with `kind` ∈
+    `code | docs | analysis | requirement | user-story`, and explains that
+    `code` changes repo source/config/files while the rest are non-development
+    and produce a markdown artifact on the issue branch.
+  - **Schema tightened**: both the `llm_json.sh --schema` filter and the
+    pre-loop `jq -e` guard now require, per element: object, non-empty string
+    `.title`, string `.detail`, and `.kind` in the allowed set. The two filters
+    are byte-identical.
+  - **Goal body** now includes `Kind: <kind>` and
+    `Integration branch: issue/<parent#>`.
+  - **Checkout** `fetch-depth: 1` → `0`; `persist-credentials: false` → `true`
+    (needed to push). Added a `Configure git author identity` step using the
+    repo-wide identity `github-workflow-agent` /
+    `agent@users.noreply.github.com` (same as `agent-build.yml`).
+  - **Job `permissions`** gained `contents: write` (kept `issues: write` +
+    `actions: write`; top-level stays `permissions: {}`; no `pull-requests`
+    added).
+  - **Integration branch** created as the first action under the delegation
+    step's existing `ERR` trap, before the goal loop: `git fetch --no-tags
+    origin dev`; skip when `refs/heads/issue/<N>` exists on `origin`; else
+    `git checkout -B "issue/<N>" "origin/dev"` + `git push -u origin
+    "issue/<N>"`. Never `--force`, and the only `git push` in the file targets
+    `issue/<N>`.
+  - **Summary comment** (`<!-- orchestrator:v1 -->`) now states the integration
+    branch, the `task/<goal#>` → `issue/<N>` auto-merge model, the single
+    `issue/<N>` → `dev` PR at completion, and that agents never merge to `dev`.
+    `v1-error` semantics unchanged.
+- `.agents/orchestrator/STATE-MACHINE.md` — appended **§9 Branch model (v1)**:
+  `issue/<parent#>` integration branch, `task/<goal#>` per-goal branch
+  (Programmer, Phase 4b), non-dev artifact path
+  `.agents/issue-<parent#>/goal-<goal#>.md`, the single final
+  `issue/<N>` → `dev` PR awaiting human merge, the no-workflow-edits hard rule,
+  and the `contents: write` / `pull-requests: write` permission note.
+- `.agents/orchestrator/NOTES.md` (this section).
+
+## Verification (pre-commit, actual output)
+
+- `ruby -ryaml -e "YAML.load_file('.github/workflows/agent-orchestrate.yml')"` →
+  `YAML OK`.
+- Extracted all 6 `run:` blocks (via Ruby YAML) and `bash -n` each:
+  `bash -n OK` for all 6.
+- Structural assertions (Ruby YAML on the parsed workflow): job
+  `permissions == {"contents"=>"write","issues"=>"write","actions"=>"write"}`;
+  no `pull-requests` key; checkout `fetch-depth==0` and
+  `persist-credentials==true`; `issue/${ISSUE_NUMBER}` logic present;
+  `git ls-remote --exit-code --heads origin` present;
+  `git checkout -B "issue/${ISSUE_NUMBER}" "origin/dev"` present;
+  `git push -u origin "issue/${ISSUE_NUMBER}"` present; the scan of all
+  `git push` lines returns exactly that one line — no `dev`/`main` target and
+  no `--force` anywhere.
+- Schema equality: the `--schema` filter and the pre-loop `jq -e` guard print
+  identically → `IDENTICAL: true`.
+- `jq -e` schema tests on the exact filter:
+  - passes: valid 3-field array; two valid elements;
+  - rejects: missing `.kind`, bad `.kind`, non-string `.title`, empty `.title`,
+    `["foo"]`, `[]`, and case-mismatched `"CODE"`.
+- `git status --short` shows exactly the 3 intended files.
+
+## Commit + push record (dev only — NEVER main)
+
+- Message: `feat(orchestrator): integration branch issue/<parent#> + goal kind classification (Phase 4a)`.
+- Files in this commit (ONLY these 3):
+  - `.github/workflows/agent-orchestrate.yml`
+  - `.agents/orchestrator/STATE-MACHINE.md` (§9 appended)
+  - `.agents/orchestrator/NOTES.md` (this section)
+- Push: `git push origin dev` (no `-i`, no `--force`, no `--no-verify`).
+- Commit SHA + push result: `recorded in the follow-up notes-only commit`
+  (its own SHA is recorded post-push, not invented here).
+
+## Open risks / follow-ups
+
+- **Live branch creation unverified**: YAML parse + `bash -n` + structural
+  assertions prove syntax and that only `issue/<N>` is pushed. The real
+  `git fetch`/`checkout -B`/`push -u` against `origin/dev` has not run; first
+  trial = a test issue labeled `ai-orchestrate` with `OPENCODE_API_KEY` set,
+  then confirm `refs/heads/issue/<N>` exists on `origin`.
+- **Re-run after a partial failure creates the branch but no goals (or vice
+  versa)**: branch creation is idempotent (remote-exists → skip), so re-applying
+  `ai-orchestrate` is safe. However a branch may be created for a parent whose
+  `goals.json` later fails the guard; the orphan branch is harmless but persists.
+- **Phase 4b (Programmer) not built**: `task/<goal#>` creation, the `--no-ff`
+  auto-merge into `issue/<parent#>`, the non-dev artifact commit to
+  `.agents/issue-<parent#>/goal-<goal#>.md`, the final `issue/<N>` → `dev` PR,
+  the no-workflow-edits guard, and the Programmer's `contents: write` are
+  described in §9 but not executable yet.
+- **Dedupe on re-run does not re-check `kind`**: existing goals are skipped by
+  exact title, so a goal created by an older run (without `Kind:`) keeps its old
+  body; only newly created goals carry `Kind:`/`Integration branch:`. Acceptable
+  for v1, worth a migration note if it matters.
+- **`v1-error` on branch failure is generic**: the delegation `ERR` trap message
+  says "failed while delegating goals"; a branch-creation failure is now caught
+  by the same trap and produces the same loud `<!-- orchestrator:v1-error -->`
+  comment + non-zero exit, but does not specifically name the branch step.
+- `contents: write` widens the orchestrator's token scope; branch creation is
+  the only write path and it never targets `dev`/`main` (structurally asserted).
