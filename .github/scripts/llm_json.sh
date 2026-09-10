@@ -11,13 +11,18 @@
 #               --schema '<JQ_BOOL_FILTER>' [--effort low|medium|high] [--max-tokens N]
 #
 # Env:
-#   OPENROUTER_API_KEY[_2.._5]  (>=1 required) bearer tokens, tried in order; rotate on 401/402/403 or transport exhaustion; never logged
-#   MODEL                 default thinkingmachines/inkling:free
+#   OPENROUTER_API_KEY[_2.._5]  (>=1 required) bearer tokens, tried in order; rotate on 401/402 or transport exhaustion; never logged
+#   MODEL                 default nex-agi/nex-n2.5-pro:free (override via env MODEL / repo variable MODEL)
 #   OPENROUTER_ENDPOINT   default https://openrouter.ai/api/v1/chat/completions
 #   LLM_MAX_ATTEMPTS      default 3
 #   LLM_BACKOFF           default "5 15 45" seconds, indexed by attempt
 #   LLM_REASONING_EFFORT  explicit override; when SET (even to "") it wins over
 #                         --effort and an empty value disables reasoning_effort
+#
+# NOTE: OpenRouter may gate a model to "approved" apps; a direct API call then
+# returns HTTP 403. That is a model/account restriction, NOT a key failure, so
+# 403 is treated as fatal (no key rotation) and the provider's .error.message is
+# surfaced to make the reason visible.
 #
 # Exit 0 only after writing schema-valid JSON to --out. Every failure path
 # prints an ::error :: diagnostic (HTTP code / attempt / reason) to stderr and
@@ -87,7 +92,7 @@ done
 unset _k _v
 [ "${#KEYS[@]}" -gt 0 ] || fail "no API key configured (set OPENROUTER_API_KEY, optionally _2.._5)"
 
-MODEL="${MODEL:-thinkingmachines/inkling:free}"
+MODEL="${MODEL:-nex-agi/nex-n2.5-pro:free}"
 ENDPOINT="${OPENROUTER_ENDPOINT:-https://openrouter.ai/api/v1/chat/completions}"
 MAX_ATTEMPTS="${LLM_MAX_ATTEMPTS:-3}"
 BACKOFF="${LLM_BACKOFF:-5 15 45}"
@@ -159,9 +164,18 @@ is_transport() {
 
 is_key_failure() {
   case "${1:-}" in
-    401|402|403) return 0 ;;
+    401|402) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# Extract a short, safe provider error message from the last response body.
+# Never prints headers or the key; truncates to 300 chars on one line.
+api_error_message() {
+  local msg
+  msg="$(jq -r '.error.message // .error // .message // empty' "$BODY_FILE" 2>/dev/null || true)"
+  case "$msg" in ''|null) return 0 ;; esac
+  printf '%s' "$msg" | tr '\n' ' ' | cut -c1-300
 }
 
 # Apply +/-20% jitter to a base delay in seconds.
@@ -205,10 +219,11 @@ retry_after() {
 
 # Transport retry + key rotation helper: POST $1 with jittered backoff /
 # Retry-After on transport failures, rotating to the next configured key on an
-# auth/credit failure (401/402/403) or once a key's transport retries are
+# auth/credit failure (401/402) or once a key's transport retries are
 # exhausted. Returns 0 only on HTTP 200. Used for BOTH the primary call and the
-# single semantic correction. A non-retryable, non-key HTTP code (e.g. 400/404/
-# 422) fails loudly without rotating: the request/model is wrong, not the key.
+# single semantic correction. A non-retryable, non-key HTTP code (e.g. 403/400/
+# 404/422) fails loudly without rotating: the request/model is wrong, not the
+# key — 403 in particular means OpenRouter gated the model to approved apps.
 # $2 = phase label for diagnostics. The key VALUE is never logged; only the key
 # index (ki/N) and HTTP codes.
 post_with_retries() {
@@ -245,10 +260,20 @@ post_with_retries() {
         echo "llm_json: key ${ki}/${n} transport exhausted (HTTP ${HTTP_CODE}, ${phase}) after ${attempt} attempt(s); rotating" >&2
         break
       fi
-      fail "HTTP ${HTTP_CODE} is not retryable (${phase}, attempt ${attempt}/${MAX_ATTEMPTS})"
+      local api_msg; api_msg="$(api_error_message)"
+      if [ -n "$api_msg" ]; then
+        fail "HTTP ${HTTP_CODE} is not retryable (${phase}, attempt ${attempt}/${MAX_ATTEMPTS}): ${api_msg}"
+      else
+        fail "HTTP ${HTTP_CODE} is not retryable (${phase}, attempt ${attempt}/${MAX_ATTEMPTS})"
+      fi
     done
   done
-  fail "all ${n} API key(s) failed on ${phase}"
+  local last_msg; last_msg="$(api_error_message)"
+  if [ -n "$last_msg" ]; then
+    fail "all ${n} API key(s) failed on ${phase}: ${last_msg}"
+  else
+    fail "all ${n} API key(s) failed on ${phase}"
+  fi
 }
 
 # Atomically write the schema-validated candidate to --out.

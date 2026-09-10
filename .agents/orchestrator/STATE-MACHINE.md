@@ -14,9 +14,9 @@
 
 | Role | Workflow(s) | Entry trigger | Effort | Model |
 |---|---|---|---|---|
-| **PO** | `agent-orchestrate`, `agent-review` | `ai-orchestrate`; PO verdict pass on `goal/review` | **high** | `thinkingmachines/inkling:free` |
-| **TL** | `agent-techlead` | `goal/tl` | **medium** | `thinkingmachines/inkling:free` |
-| **Programmer** | `agent-programmer` | `goal/ready` | **medium** (`kind: code` only; non-dev goals never reach the Programmer — see §11) | `thinkingmachines/inkling:free` |
+| **PO** | `agent-orchestrate`, `agent-review` | `ai-orchestrate`; PO verdict pass on `goal/review` | **high** | `${{ vars.MODEL }}` (default `nex-agi/nex-n2.5-pro:free`) |
+| **TL** | `agent-techlead` | `goal/tl` | **medium** | `${{ vars.MODEL }}` (default `nex-agi/nex-n2.5-pro:free`) |
+| **Programmer** | `agent-programmer` | `goal/ready` | **medium** (`kind: code` only; non-dev goals never reach the Programmer — see §11) | `${{ vars.MODEL }}` (default `nex-agi/nex-n2.5-pro:free`) |
 
 Rules:
 
