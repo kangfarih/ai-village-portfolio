@@ -30,3 +30,4 @@
   - `gh label create "kind/task" --color "1D76DB" --description "Task or decision item" 2>/dev/null || true`
   - `gh label create "triage/accepted" --color "0E8A16" --description "Triage accepted, ready for work" 2>/dev/null || true`
 - Verification: `ruby -ryaml -e "YAML.load_file(...)"` → `YAML OK`; `git diff` shows exactly 3 added lines in the `Apply triage labels` run block, nothing else touched.
+- Commit / push: SHA `c7e2cbf` — "fix(triage): create labels if missing before applying (self-healing)"; `git push origin dev` → OK (`26cab1e..c7e2cbf  dev -> dev`). Dev only; no merge to main.
