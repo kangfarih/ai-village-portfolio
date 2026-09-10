@@ -1910,3 +1910,59 @@ unchanged.
 
 Commit: `4b84e6b`; push: `origin/dev` `19d5ac1..4b84e6b` (fast-forward, no
 force). This NOTES section is added in a follow-up commit.
+
+## Model config: repo Variable MODEL + provider-error diagnostics
+
+`thinkingmachines/inkling:free` is **OpenRouter-gated to approved "agentic
+harness" apps**; a direct API call (including from GitHub Actions) returns
+**HTTP 403** and can never succeed, so relying on it was a guaranteed failure.
+The previous rotation logic also treated 403 as a key failure, cycling through
+all five keys pointlessly and hiding OpenRouter's actual reason.
+
+Changes:
+- **Configurable model.** The five role workflows
+  (`agent-triage`, `agent-orchestrate`, `agent-techlead`, `agent-programmer`,
+  `agent-review`) now set `MODEL: ${{ vars.MODEL || 'nex-agi/nex-n2.5-pro:free' }}`.
+  Override by defining the GitHub repository **Variable** `MODEL`; the default
+  is `nex-agi/nex-n2.5-pro:free`. `llm_json.sh`'s own default is now
+  `nex-agi/nex-n2.5-pro:free` (env `MODEL` still wins).
+- **403 no longer rotates.** `is_key_failure` now returns true only for `401`
+  (bad key) and `402` (no credits). `403`/`400`/`404`/`422` are fatal,
+  non-retryable, non-rotating failures — the model/request is wrong, not the key.
+- **Provider error surfaced.** New `api_error_message` reads
+  `.error.message // .error // .message` from the last response body (one line,
+  ≤300 chars, never headers/key). It is appended to the fatal non-retryable
+  diagnostic and to the terminal `all N API key(s) failed` message.
+
+Model-list findings with the user's key: working free models included
+`nex-agi/nex-n2.5-pro:free` and `nvidia/nemotron-3.5-lightning:free`;
+`openrouter/thinkingmachines/inkling:free` is **not** a valid API model id
+(HTTP 400).
+
+### Verification
+- `bash -n .github/scripts/llm_json.sh` → OK; file mode remains `0755`.
+- `ruby -ryaml -e 'YAML.load_file(...)'` for all 5 workflows → OK. Each has
+  exactly one `MODEL: ${{ vars.MODEL || 'nex-agi/nex-n2.5-pro:free' }}` line and
+  no remaining `MODEL: thinkingmachines/inkling:free`.
+- `bash -n` on every extracted `run:` block (23 blocks) → all OK.
+- Fake-`curl` tests of `llm_json.sh` (7 cases, all pass):
+  1. key1 403 with `{"error":{"message":"model gated to harnesses"}}` → exit 1
+     quickly; stderr contains `model gated to harnesses`; key2 is **never**
+     called (403 is fatal).
+  2. key1 401, key2 200 → exit 0, used key2 (rotation preserved).
+  3. key1 402, key2 200 → exit 0.
+  4. key1 500×3 then key2 200 → exit 0 (transport exhaustion rotates; key1 hit
+     exactly 3 times).
+  5. all five 401 → exit 1, `all 5 API key(s) failed on primary: <provider msg>`.
+  6. no key env set → exit 1, `no API key configured ...`.
+  7. no dummy key value appears in stdout/stderr.
+  Default-model check: with `MODEL` unset the request body carries
+  `nex-agi/nex-n2.5-pro:free`; with `MODEL` set it carries the override.
+- `git diff --stat` → only the 7 allowed paths (5 workflows, `llm_json.sh`,
+  `STATE-MACHINE.md`), plus this NOTES section.
+
+`STATE-MACHINE.md` §1 pinned the old model per role; the three role rows now
+read `${{ vars.MODEL }}` (default `nex-agi/nex-n2.5-pro:free`).
+
+Commit: `3270853`; push: `origin/dev` `f75d814..3270853` (fast-forward, no
+force). This NOTES section is added in a follow-up commit.
