@@ -236,6 +236,23 @@ write_out() {
   fi
 }
 
+# Strip an optional single fenced wrapper around the whole reply: one leading
+# fence line (``` or ```lang) and/or one trailing ``` line. Interior lines that
+# contain fenced blocks (real code/doc content) are preserved byte-for-byte.
+# The old `/^```/d` deleted every fence line and corrupted legitimate content.
+strip_fences() {
+  awk '
+    { lines[NR] = $0 }
+    END {
+      first = 1
+      last = NR
+      if (last >= 1 && lines[1] ~ /^```[A-Za-z0-9]*$/) first = 2
+      if (last >= first && lines[last] ~ /^```$/) last = last - 1
+      for (i = first; i <= last; i++) print lines[i]
+    }
+  '
+}
+
 # --- primary call + transport retries -------------------------------------
 BODY="$(build_body)"
 post_with_retries "$BODY" "primary"
@@ -244,7 +261,7 @@ post_with_retries "$BODY" "primary"
 CONTENT="$(jq -r '.choices[0].message.content // ""' "$BODY_FILE" 2>/dev/null || true)"
 [ -n "$CONTENT" ] || fail "HTTP 200 but response contained no message content"
 
-printf '%s' "$CONTENT" | sed '/^```/d' > "$CANDIDATE_FILE"
+printf '%s' "$CONTENT" | strip_fences > "$CANDIDATE_FILE"
 
 if jq -e "$SCHEMA" "$CANDIDATE_FILE" >/dev/null 2>&1; then
   write_out || fail "failed to write validated JSON to ${OUT}"
@@ -261,7 +278,7 @@ post_with_retries "$BODY" "correction"
 CONTENT="$(jq -r '.choices[0].message.content // ""' "$BODY_FILE" 2>/dev/null || true)"
 [ -n "$CONTENT" ] || fail "correction HTTP 200 but response contained no message content"
 
-printf '%s' "$CONTENT" | sed '/^```/d' > "$CANDIDATE_FILE"
+printf '%s' "$CONTENT" | strip_fences > "$CANDIDATE_FILE"
 if jq -e "$SCHEMA" "$CANDIDATE_FILE" >/dev/null 2>&1; then
   write_out || fail "failed to write corrected validated JSON to ${OUT}"
   echo "llm_json: wrote corrected validated JSON to ${OUT}" >&2

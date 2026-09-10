@@ -353,10 +353,38 @@ integration PR.
 - The Programmer treats existence as a fallback: it runs
   `git fetch --no-tags origin dev` and, if
   `git ls-remote --exit-code --heads origin "refs/heads/issue/<parent#>"`
-  fails, creates the branch from `origin/dev` and pushes it. This is
-  idempotent and never `--force`s.
+  fails, creates the branch locally from `origin/dev`. The branch is published
+  by the integration-update push below (with the goal's merge). This is
+  race-safe: if a sibling creates the branch first, the push is rejected and the
+  bounded retry (see *Integration update retry*) re-fetches and uses the
+  sibling's branch instead of failing. Idempotent and never `--force`s.
 - Every goal's work lands here (directly or by merge); the branch is the single
   integration point for the parent.
+
+### Integration update retry (bounded)
+
+The Programmer's merge into `issue/<parent#>` races sibling goals of the same
+parent (concurrency is per-goal, §5). A rejected (non-fast-forward) integration
+push is retried, bounded at **`MAX_INTEGRATION_ATTEMPTS=5`** with a short
+`IATTEMPT*2`-second backoff:
+
+```
+fetch origin <INTEGRATION>
+  → git checkout -B <INTEGRATION> origin/<INTEGRATION>
+  → git merge --no-ff <TASK> -m <msg>
+  → git push origin <INTEGRATION>
+```
+
+- On a rejected push: re-fetch `origin/<INTEGRATION>`, re-checkout, re-merge the
+  (unchanged) `task/<goal#>` branch, and push again.
+- Fallback branch not yet on `origin`: the first attempt merges into the
+  locally created `issue/<parent#>` (from `origin/dev`); if a sibling created it
+  first, that push is rejected and the retry fetches/uses the sibling's branch.
+- **Real merge CONFLICT:** `git merge --abort` → loud comment + `needs-human` +
+  `exit 1`; the integration branch is unchanged.
+- **Retries exhausted:** loud comment + `needs-human` + `exit 1`.
+- **NO `--force`**, and the only push targets are `issue/<parent#>` and
+  `task/<goal#>` — **never `dev`/`main`**.
 
 ### `task/<goal#>` — per-goal branch
 
@@ -365,7 +393,8 @@ integration PR.
 - The Programmer writes the changeset's real files, commits them
   (`feat(goal-#N)` for `kind: code`, else `docs(goal-#N)`), pushes
   `task/<goal#>`, then auto-merges it into `issue/<parent#>` with
-  `git merge --no-ff` and pushes the integration branch. The goal's merge
+  `git merge --no-ff` and pushes the integration branch (bounded retry on a
+  concurrent sibling push — see *Integration update retry*). The goal's merge
   target is the integration branch, not `dev`.
 - **Stale branch handling:** before cutting `task/<goal#>`, the Programmer
   deletes the local and remote task branch
@@ -380,12 +409,23 @@ integration PR.
 ### Safety guards (before writing anything)
 
 Before any file is written, the Programmer rejects the WHOLE changeset (loud
-comment + `needs-human` + `exit 1`) if ANY file:
+comment + `needs-human` + `exit 1`) if ANY file path fails a strict
+**allowlist** applied to the **normalized** path:
 
-- has an empty path, an absolute path (`/…`), or a `..` path segment;
-- targets `.git/**`;
-- targets `.github/workflows/**` (privilege-escalation guard);
-- or the changeset exceeds **25 files** or **200000 total content bytes**.
+- strip a single leading `./` first (so `./.github/workflows/x` and
+  `./.git/config` cannot bypass the guard);
+- reject an empty path or an absolute path (`/…`);
+- reject any path that does not fully match the conservative charset
+  `^[A-Za-z0-9._/+@-]+$` (this rejects whitespace, newlines, and control
+  characters);
+- reject any `..` path segment;
+- reject any `.git` path **component**, including nested ones (`sub/.git/x`);
+- reject a leading `.` segment that is not an allowed dot-directory
+  (`.agents/` and `.github/` are allowed; `.github/workflows/**` is separately
+  forbidden);
+- reject the `.github/workflows/` prefix or any `.github/workflows` component
+  sequence (privilege-escalation guard);
+- reject a changeset over **25 files** or **200000 total content bytes**.
 
 No file is ever silently dropped.
 

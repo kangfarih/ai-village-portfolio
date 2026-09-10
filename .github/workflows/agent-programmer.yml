@@ -32,7 +32,6 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (contains(github.event.issue.labels.*.name, 'goal/ready') &&
-       github.event.issue.user.type != 'Bot' &&
        github.event.sender.type != 'Bot')
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -78,6 +77,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           MODEL: thinkingmachines/inkling:free
+          # Complete file contents need a large completion budget; the helper's
+          # 1500 default truncates real changesets. Override with the repo
+          # variable PROGRAMMER_MAX_TOKENS if a bigger budget is needed.
+          PROGRAMMER_MAX_TOKENS: ${{ vars.PROGRAMMER_MAX_TOKENS || '16000' }}
         run: |
           set -euo pipefail
 
@@ -218,7 +221,8 @@ jobs:
               --user-file /tmp/programmer_user.txt \
               --out /tmp/programmer_changeset.json \
               --schema "$CHANGESET_SCHEMA" \
-              --effort "$EFFORT"; then
+              --effort "$EFFORT" \
+              --max-tokens "${PROGRAMMER_MAX_TOKENS:-16000}"; then
             fail_human "**Programmer failed.** The LLM could not produce a schema-valid changeset after retries. The goal was moved to \`needs-human\`; inspect the run log, then hand off to a human."
             echo "::error::programmer LLM helper failed after retries"
             exit 1
@@ -244,7 +248,13 @@ jobs:
 
           # --- Safety guards (before writing anything) --------------------------
           # Reject the WHOLE changeset on any unsafe path; never silently drop a
-          # file. A portable bash `case` loop keeps this host-agnostic.
+          # file. Caps are checked first, then every path is validated against a
+          # strict allowlist over the NORMALIZED path: strip a single leading
+          # "./", then require the conservative charset, no ".." segment, no
+          # ".git" component (incl. nested), no ".github/workflows" sequence, and
+          # no unexpected leading dot segment. This closes the literal-prefix
+          # bypass (./.github/workflows/x, ./.git/config, sub/.git/x) and rejects
+          # whitespace/control characters. Nothing is written before this passes.
           FILE_COUNT="$(jq '.files | length' /tmp/programmer_changeset.json)"
           if [ "$FILE_COUNT" -gt 25 ]; then
             fail_human "**Programmer rejected the changeset:** it contains ${FILE_COUNT} files, over the 25-file cap. The goal was moved to \`needs-human\`."
@@ -259,18 +269,29 @@ jobs:
             exit 1
           fi
 
-          BAD_PATH=""
-          while IFS= read -r FPATH; do
-            case "$FPATH" in
-              "")                    BAD_PATH="empty path"; break ;;
-              /*)                    BAD_PATH="absolute path: ${FPATH}"; break ;;
-              .git/*)                BAD_PATH=".git/ path: ${FPATH}"; break ;;
-              .github/workflows/*)   BAD_PATH=".github/workflows/ path: ${FPATH}"; break ;;
-            esac
-            case "/${FPATH}/" in
-              */../*)                BAD_PATH="'..' path segment: ${FPATH}"; break ;;
-            esac
-          done < <(jq -r '.files[]?.path' /tmp/programmer_changeset.json)
+          # Strict allowlist over the NORMALIZED path. Done in one jq pass so an
+          # embedded newline/control character cannot be hidden by line-splitting
+          # (a line-based bash loop would split it and could be bypassed). `norm`
+          # strips a single leading "./"; `badpath` returns the first violation
+          # message, or null. `\A...\z` anchors are required because Oniguruma's
+          # `^...$` also matches before a trailing newline. Allowed dot-dirs are
+          # .agents/ and .github/ (with .github/workflows separately forbidden).
+          BAD_PATH="$(jq -r '
+            def norm: if startswith("./") then .[2:] else . end;
+            def badpath:
+              . as $p
+              | ($p | norm) as $n
+              | ($n | split("/")) as $s
+              | if $p == "" then "empty path"
+                elif ($p | startswith("/")) then "absolute path: " + $p
+                elif ($p | test("\\A[A-Za-z0-9._/+@-]+\\z") | not) then "path has characters outside the allowlist: " + $p
+                elif ($s | index("..")) then "\"..\" path segment: " + $p
+                elif ($s | index(".git")) then ".git path segment: " + $p
+                elif ([range(0; (($s | length) - 1)) | select($s[.] == ".github" and $s[. + 1] == "workflows")] | length) > 0 then ".github/workflows path: " + $p
+                elif ((($s[0] // "") | startswith(".")) and ($s[0] != ".agents") and ($s[0] != ".github")) then "disallowed leading dot segment: " + $p
+                else null end;
+            [ .files[]? | (.path | badpath) ] | map(select(. != null)) | first // ""
+          ' /tmp/programmer_changeset.json)"
           if [ -n "$BAD_PATH" ]; then
             fail_human "**Programmer rejected the changeset:** unsafe file path (\`${BAD_PATH}\`). No file was written and the goal was moved to \`needs-human\`."
             echo "::error::unsafe file path: ${BAD_PATH}"
@@ -291,8 +312,10 @@ jobs:
             STAT="(no files written - the model flagged this goal as needing a human)"
           else
             # --- Git flow: task branch -> integration branch (never dev/main) --
-            # Exactly ONE push updates each branch (plus the mandated delete of
-            # the agent-owned task branch); no forced update anywhere.
+            # One content push per branch (plus the mandated delete of the
+            # agent-owned task branch), except that the integration push is
+            # retried on a concurrent sibling update (below). No forced update
+            # anywhere; the only push targets are ${TASK} and ${INTEGRATION}.
             git fetch --no-tags origin dev
 
             if git ls-remote --exit-code --heads origin "refs/heads/${INTEGRATION}" >/dev/null 2>&1; then
@@ -300,8 +323,9 @@ jobs:
               git checkout -B "${INTEGRATION}" "origin/${INTEGRATION}"
             else
               # Fallback for when the orchestrator did not create it: build the
-              # integration branch locally from origin/dev; the final push below
-              # publishes it together with the merge.
+              # integration branch locally from origin/dev; the update below
+              # publishes it together with the merge. If a sibling creates it
+              # first the push is rejected and the bounded retry re-fetches it.
               echo "Integration branch ${INTEGRATION} missing; creating it locally from origin/dev."
               git checkout -B "${INTEGRATION}" "origin/dev"
             fi
@@ -336,15 +360,54 @@ jobs:
             TASK_SHA="$(git rev-parse HEAD)"
             git push -u origin "${TASK}"
 
-            git checkout "${INTEGRATION}"
-            if ! git merge --no-ff "${TASK}" -m "merge(${TASK}): ${COMMIT_SUBJECT}"; then
-              git merge --abort || true
-              fail_human "**Programmer could not auto-merge** \`${TASK}\` into \`${INTEGRATION}\` (conflict). The task branch was pushed and the integration branch is unchanged. The goal was moved to \`needs-human\`."
-              echo "::error::merge conflict merging ${TASK} into ${INTEGRATION}"
+            # --- Integration update with bounded retry ------------------------
+            # Concurrency is per-goal, so two goals of one parent can push
+            # `issue/<parent#>` at the same time; the loser would otherwise
+            # hard-fail on a non-fast-forward rejection and lose its merge. On a
+            # rejected push, re-fetch the latest origin/<INTEGRATION>,
+            # re-checkout, re-merge the (fixed) task branch, and push again.
+            # Bounded at MAX_INTEGRATION_ATTEMPTS; never --force, never
+            # dev/main. A real merge conflict still aborts loudly.
+            MERGE_MSG="merge(${TASK}): ${COMMIT_SUBJECT}"
+            MAX_INTEGRATION_ATTEMPTS=5
+            INTEGRATION_PUSHED="false"
+            IATTEMPT=1
+            while [ "$IATTEMPT" -le "$MAX_INTEGRATION_ATTEMPTS" ]; do
+              if git ls-remote --exit-code --heads origin "refs/heads/${INTEGRATION}" >/dev/null 2>&1; then
+                git fetch --no-tags origin "${INTEGRATION}"
+                git checkout -B "${INTEGRATION}" "origin/${INTEGRATION}"
+              else
+                # Not published yet (fallback creation), or a sibling created it
+                # mid-flight; rebuild locally from the latest dev and let the
+                # next retry pick up any concurrent sibling branch.
+                git fetch --no-tags origin dev
+                git checkout -B "${INTEGRATION}" "origin/dev"
+              fi
+
+              if ! git merge --no-ff "${TASK}" -m "$MERGE_MSG"; then
+                git merge --abort || true
+                fail_human "**Programmer could not auto-merge** \`${TASK}\` into \`${INTEGRATION}\` (conflict). The task branch was pushed and the integration branch is unchanged. The goal was moved to \`needs-human\`."
+                echo "::error::merge conflict merging ${TASK} into ${INTEGRATION}"
+                exit 1
+              fi
+
+              if git push origin "${INTEGRATION}"; then
+                INTEGRATION_PUSHED="true"
+                break
+              fi
+
+              echo "::warning::integration push for ${INTEGRATION} rejected (attempt ${IATTEMPT}/${MAX_INTEGRATION_ATTEMPTS}); re-fetching and re-merging."
+              if [ "$IATTEMPT" -lt "$MAX_INTEGRATION_ATTEMPTS" ]; then
+                sleep "$(( IATTEMPT * 2 ))"
+              fi
+              IATTEMPT=$(( IATTEMPT + 1 ))
+            done
+            if [ "$INTEGRATION_PUSHED" != "true" ]; then
+              fail_human "**Programmer could not update** \`${INTEGRATION}\`: the push was rejected after ${MAX_INTEGRATION_ATTEMPTS} attempts (concurrent sibling updates). The task branch \`${TASK}\` was pushed but the integration branch was not updated. The goal was moved to \`needs-human\`."
+              echo "::error::integration push rejected after ${MAX_INTEGRATION_ATTEMPTS} attempts"
               exit 1
             fi
             MERGE_SHA="$(git rev-parse HEAD)"
-            git push origin "${INTEGRATION}"
             STAT="$(git diff --stat HEAD~1 HEAD | tail -n 1)"
           fi
 

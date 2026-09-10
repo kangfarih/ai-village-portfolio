@@ -1030,3 +1030,152 @@ review/merge. Agents never merge and never push `dev`/`main`.
   `agent-review-<n>` concurrency group serializes review runs per goal and the
   block is idempotent, so a retry is safe.
 
+---
+
+# Phase 4c-1 — full-loop audit fixes: path guard, integration retry, bot guard, token budget, fence strip (`dev` only — NEVER main)
+
+Blocking/Warning fixes from the full-loop audit that belong to the Programmer,
+the shared LLM helper, and the Tech Lead. Five files. The review/orchestrator/
+triage workflows are untouched. No push/PR/merge behavior is weakened: agents
+still never push `dev`/`main` and never force-push.
+
+## What changed
+
+- **B1 + N2 + N3 — path guard hardened (`.github/workflows/agent-programmer.yml`).**
+  The literal-prefix `case` loop was replaced by a single `jq` allowlist pass over
+  the NORMALIZED path (`norm` strips one leading `./`), run before any write:
+  - reject empty / absolute (`/…`) paths;
+  - reject anything not matching the conservative charset
+    `\A[A-Za-z0-9._/+@-]+\z` (letters, digits, `. _ / + @ -`);
+  - reject any `..` segment, any `.git` component (incl. nested `sub/.git/x`),
+    and the `.github/workflows` component sequence;
+  - reject a leading dot segment unless it is `.agents/` or `.github/`.
+  Validating in `jq` (not a line-based bash loop) also closes the embedded
+  newline/control-character bypass: `\A…\z` is used because Oniguruma's `^…$`
+  matches before a trailing newline. This rejects `./.github/workflows/x`,
+  `./.git/config`, `sub/.git/x`, `../evil`, `/etc/passwd`, `a b.js`, and empty.
+  The existing >25-file and >200000-byte caps are unchanged; any violation is a
+  loud comment + `needs-human` + `exit 1` before anything is written.
+- **B3 — bounded integration-update retry (`.github/workflows/agent-programmer.yml`).**
+  Because concurrency is per-goal, sibling goals can push `issue/<parent#>`
+  concurrently; the loser previously hard-failed on a non-fast-forward rejection
+  and lost its merge. The integration update now retries up to
+  `MAX_INTEGRATION_ATTEMPTS=5` (short `IATTEMPT*2`-second backoff):
+  `fetch origin <INTEGRATION> → git checkout -B <INTEGRATION> origin/<INTEGRATION>
+  → git merge --no-ff <TASK> -m <msg> → git push origin <INTEGRATION>`.
+  On a rejected push it re-fetches/re-checkouts the latest origin and re-merges
+  the (unchanged) task branch. A real merge conflict still does `git merge
+  --abort` → loud + `needs-human` + `exit 1`; exhausted retries → loud +
+  `needs-human` + `exit 1`. NEVER `--force`, and the only push targets remain
+  `task/<goal#>` and `issue/<parent#>`.
+  The fallback integration-branch creation is now race-safe: when
+  `issue/<parent#>` is absent it is created locally from `origin/dev`, and a
+  concurrent sibling creation makes the first push rejected; the retry simply
+  fetches and uses the sibling's branch instead of failing.
+- **B5 — bot guard allows human label recovery (both workflows).** Removed the
+  `github.event.issue.user.type != 'Bot'` clause from the job `if:` in
+  `agent-programmer.yml` and `agent-techlead.yml`. Goal issues are authored by
+  `GITHUB_TOKEN` (Bot), so the documented "human re-applies the label" recovery
+  never ran. `github.event.sender.type != 'Bot'` and the `workflow_dispatch`
+  short-circuit are kept. (Other roles still carry the clause; out of scope.)
+- **B6 — programmer completion budget (`.github/workflows/agent-programmer.yml`).**
+  The programmer calls `llm_json.sh` with
+  `--max-tokens "${PROGRAMMER_MAX_TOKENS:-16000}"` (the helper's 1500 default
+  truncated full-file changesets → schema failure → `needs-human`). The budget is
+  env-overridable via the repo variable `PROGRAMMER_MAX_TOKENS`
+  (`${{ vars.PROGRAMMER_MAX_TOKENS || '16000' }}`). No other role's token budget
+  changed.
+- **N6 — fence stripping preserves interior fences (`.github/scripts/llm_json.sh`).**
+  Replaced `sed '/^```/d'` (which deleted every fence line and corrupted content
+  containing real fenced code) with a `strip_fences` awk helper that removes only
+  one optional leading `^```[A-Za-z0-9]*$` line and one optional trailing
+  `^```$` line, preserving every interior line byte-for-byte.
+- **Docs.** `STATE-MACHINE.md` §9 safety guards rewritten to the allowlist
+  (charset, normalized leading `./`, `.git` component, `.github/workflows`, caps)
+  and a new *Integration update retry (bounded)* subsection documents the
+  re-fetch/re-merge/push retry and the never-force / never-`dev`/`main` rule.
+  This NOTES section.
+
+## Verification (actual output)
+
+- `ruby -ryaml` parses both workflows (`YAML OK`); every `run:` block extracted
+  (5 programmer + 4 techlead) and `bash -n` on each → all OK. `bash -n
+  .github/scripts/llm_json.sh` → OK.
+- Path guard (jq filter extracted verbatim from the workflow, `jq`/bash
+  harness): **24/24 pass**. Rejects `./.github/workflows/ci.yml`,
+  `.github/workflows/ci.yml`, `.git/config`, `./.git/config`, `sub/.git/x`,
+  `.git`, `../evil`, `a/../../b`, `/etc/passwd`, `a b.js`, `docs/x y.md`, empty,
+  `x/.github/workflows/y`, `.ssh/id_rsa`, `.`; accepts `src/app.js`,
+  `.agents/issue-1/goal-2.md`, `README.md`, `src/.eslintrc`,
+  `.github/scripts/foo.sh`, `a/b-c_d+e@f.txt`. Embedded newline and tab paths are
+  rejected (N3); a multi-file set with one bad path is rejected on the first
+  violation.
+- Fence stripper (`strip_fences` extracted verbatim): **7/7 pass**. Outer
+  ` ```json ` / ` ``` ` wrappers stripped; non-fenced single-line and pretty JSON
+  untouched; a payload with interior ``` fences survives intact with and without
+  an outer wrapper; uppercase language tag stripped.
+- Mock git race sim (real local bare `origin`, extracted retry block, `git` shim
+  that injects a concurrent sibling commit, `sleep` shim):
+  - normal: 2 integration-push attempts, rcs `1,0` → exactly one successful
+    integration push, `INTEGRATION_PUSHED=true`; final `issue/55` contains
+    `base.txt` + task `f.txt` + sibling `sib-1.txt` (both integrated);
+  - conflict: `NEEDS_HUMAN … could not auto-merge`, 0 pushes, exit 1, remote tip
+    unchanged;
+  - exhausted: 5 attempts all rejected (rcs `1,1,1,1,1`, sleeps `2 4 6 8`),
+    `NEEDS_HUMAN … rejected after 5 attempts`, exit 1;
+  - fallback: `issue/55` absent at start, sibling creates it just before our
+    create-push → first push rejected, retry fetches/re-merges, one successful
+    push, remote contains both the task and sibling files.
+- Push audit over the extracted `run:` blocks: only `git push -u origin
+  "${TASK}"`, `git push origin --delete "${TASK}"`, and `git push origin
+  "${INTEGRATION}"`; **zero** literal `dev`/`main` push targets (the only `dev`
+  match is `2>/dev/null`) and **zero** `--force` commands (the sole `--force`
+  token is the word in a comment).
+- Bot guard: neither workflow contains `github.event.issue.user.type`; both keep
+  `github.event.sender.type != 'Bot'` and the `workflow_dispatch` short-circuit.
+- `git status --short` shows exactly the 5 intended files.
+
+## Commit + push record (dev only — NEVER main)
+
+- Message: `fix(agents): harden path guard, bounded integration retry, bot-guard recovery, token budget, fence strip (Phase 4c-1)`.
+- Files in this commit (ONLY these 5):
+  - `.github/workflows/agent-programmer.yml`
+  - `.github/workflows/agent-techlead.yml`
+  - `.github/scripts/llm_json.sh`
+  - `.agents/orchestrator/STATE-MACHINE.md` (§9)
+  - `.agents/orchestrator/NOTES.md` (this section)
+- Push: `git push origin dev` (no `-i`, no `--force`, no `--no-verify`).
+- Commit SHA + push result: `<recorded post-push>` — `git push origin dev` OK
+  (`<old>..<new>  dev -> dev`). This notes-record entry is a second, notes-only
+  commit (its own SHA is recorded post-push, not invented here).
+
+## Open risks / follow-ups
+
+- **Live runner unverified.** YAML/`bash -n`/`jq`/mock-git tests prove syntax and
+  control flow only; the real Actions runner, `GITHUB_TOKEN` push permissions,
+  branch protections, and concurrent sibling behavior across separate runners
+  have not run. First live test = two sibling goals of one parent at
+  `goal/ready`, then confirm both merges land on `issue/<parent#>`.
+- **`git push` rejection cause is not distinguished.** Any non-zero `git push`
+  (non-fast-forward vs transient auth/network) is treated as a concurrent update
+  and retried; a persistent non-race error only surfaces after 5 attempts. It is
+  bounded, loud, and never forced, so safe, but the log shows the real git error.
+- **Leading-dot allowlist is conservative.** Paths whose first segment is a dot
+  directory other than `.agents`/`.github` (e.g. `.gitignore`, `.env.example`)
+  are now rejected where the old guard allowed them. Intended for hardening;
+  widen the allowlist if a legitimate code goal needs such a path.
+- **`jq` version dependency.** The guard uses Oniguruma `\A…\z` anchors and
+  `startswith`; verified on jq 1.7 and standard on the ubuntu-latest jq 1.6
+  (Oniguruma). A PCRE-built jq also accepts `\A…\z`.
+- **`--max-tokens` is a cap, not a guarantee.** 16000 tokens is generous but a
+  very large multi-file changeset could still truncate; the schema failure
+  remains loud (`needs-human`) rather than silently partial.
+- **`strip_fences` still removes a genuine trailing fence line.** A model reply
+  whose legitimate last line is ``` alone is stripped; interior fences (the
+  reported corruption) are preserved. This matches the mandated single
+  leading/trailing strip.
+- **Bot-guard change widens the human-recovery surface.** Removing the
+  `issue.user.type` clause means a human re-applying `goal/ready`/`goal/tl` on a
+  bot-authored goal now runs the role; `sender.type != 'Bot'` still blocks
+  bot-triggered label edits, and `workflow_dispatch` remains the automated path.
+
