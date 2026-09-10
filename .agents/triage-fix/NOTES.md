@@ -17,8 +17,8 @@
 - `git diff --stat`: 1 file changed, 3 insertions(+), 2 deletions(-); hunks match the three required edits exactly (see commit diff).
 
 ## Commit / push
-- Commit: (SHA filled after commit)
-- Push: `git push origin dev` (dev only; no merge to main).
+- Commit: `17b27ad` — "fix(triage): GH_TOKEN=github.token on both gh steps; trigger [labeled]"
+- Push: `git push origin dev` → OK (`6f2caae..17b27ad  dev -> dev`). Dev only; no merge to main.
 
 ## Cleanup
 - The custom `GH_TOKEN` repo secret is now unused and can be deleted.
