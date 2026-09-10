@@ -6,30 +6,41 @@ permissions: {}
 # Programmer role: goal issue -> concrete, self-contained deliverable (LLM) ->
 # `<!-- result:v1 -->` comment -> `goal/review`.
 # Fires when the TL adds the `goal/ready` label to a goal issue.
-# Uses GITHUB_TOKEN with `issues: write` only. NEVER pushes/PRs/merges:
+# Uses GITHUB_TOKEN with `issues: write` + `actions: write` (to dispatch the next role). NEVER pushes/PRs/merges:
 # applying the deliverable is human-gated via `/approve` (agent-build), which a
 # human runs; this workflow only comments and edits labels.
 # Config/LLM errors are LOUD (issue comment + needs-human + non-zero exit).
+#
+# Chaining: a `GITHUB_TOKEN`-made `goal/review` label does not start a new run,
+# so this role dispatches `agent-review` explicitly (see STATE-MACHINE.md §8).
+# The `issues: labeled` trigger stays for human/manual starts and re-runs.
 on:
   issues:
     types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to process"
+        required: true
 
 jobs:
   programmer:
-    # Run only if the `goal/ready` label is present and the trigger is human/agent
-    # (never another bot, so a token-made label edit cannot re-trigger us).
+    # Run if the `goal/ready` label is present and the trigger is human/agent, or
+    # on an explicit dispatch from the TL.
     if: >-
-      contains(github.event.issue.labels.*.name, 'goal/ready') &&
-      github.event.issue.user.type != 'Bot' &&
-      github.event.sender.type != 'Bot'
+      github.event_name == 'workflow_dispatch' ||
+      (contains(github.event.issue.labels.*.name, 'goal/ready') &&
+       github.event.issue.user.type != 'Bot' &&
+       github.event.sender.type != 'Bot')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
-      group: agent-programmer-${{ github.event.issue.number }}
+      group: agent-programmer-${{ github.event.issue.number || inputs.issue_number }}
       cancel-in-progress: false
     permissions:
       contents: read
       issues: write
+      actions: write
 
     steps:
       - uses: actions/checkout@v4
@@ -54,7 +65,7 @@ jobs:
 
       - name: Build deliverable (LLM, loud failure)
         env:
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           MODEL: thinkingmachines/inkling:free
@@ -184,3 +195,27 @@ jobs:
           fi
 
           gh issue edit "$ISSUE_NUMBER" --remove-label "goal/building" --add-label "goal/review"
+
+      # Chain to PO review. A `github.token`-made `goal/review` label does not
+      # start a new run, so hand off with an explicit dispatch. Dispatch ONLY
+      # when the success path moved the goal to `goal/review`; a `needs-human`
+      # outcome must not start a review.
+      - name: Dispatch next role (PO review)
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          LABELS="$(gh issue view "$ISSUE_NUMBER" --json labels --jq '[.labels[].name] | join(",")')"
+          case ",${LABELS}," in
+            *,goal/review,*) : ;;
+            *)
+              echo "Goal is not at goal/review (labels: ${LABELS}); not dispatching PO review."
+              exit 0
+              ;;
+          esac
+          if ! gh workflow run agent-review.yml --repo "${{ github.repository }}" --ref dev -f issue_number="${ISSUE_NUMBER}"; then
+            gh issue comment "$ISSUE_NUMBER" --body "**Programmer could not dispatch PO review.** The result was posted and the goal is at \`goal/review\`, but the automated hand-off failed. Re-apply \`goal/review\` (or run the \`agent-review\` workflow manually with \`issue_number=${ISSUE_NUMBER}\`) to continue." || true
+            echo "::error::failed to dispatch agent-review for issue ${ISSUE_NUMBER}"
+            exit 1
+          fi

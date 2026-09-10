@@ -8,25 +8,37 @@ permissions: {}
 # Uses GITHUB_TOKEN (use_github_token), no App install.
 # Human merge + /approve judgment stay human; this job only creates sub-issues + comments.
 # Config/LLM errors are LOUD (issue comment + non-zero exit) — no fallback.
+#
+# Label-only chaining is DEAD: `GITHUB_TOKEN`-created label events do not start
+# new runs, so the PO->TL->Programmer->review chain is advanced by explicit
+# `workflow_dispatch` (an official exception). The `issues: labeled` trigger is
+# kept for human/manual starts and re-runs. See STATE-MACHINE.md §8.
 on:
   issues:
     types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to process"
+        required: true
 
 jobs:
   orchestrate:
-    # Run only if the `ai-orchestrate` label is present and the trigger is human.
+    # Human label start OR an explicit dispatch from the previous role.
     if: >-
-      contains(github.event.issue.labels.*.name, 'ai-orchestrate') &&
-      github.event.issue.user.type != 'Bot' &&
-      github.event.sender.type != 'Bot'
+      github.event_name == 'workflow_dispatch' ||
+      (contains(github.event.issue.labels.*.name, 'ai-orchestrate') &&
+       github.event.issue.user.type != 'Bot' &&
+       github.event.sender.type != 'Bot')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
-      group: agent-orchestrate-${{ github.event.issue.number }}
+      group: agent-orchestrate-${{ github.event.issue.number || inputs.issue_number }}
       cancel-in-progress: false
     permissions:
       contents: read
       issues: write
+      actions: write
 
     steps:
       - uses: actions/checkout@v4
@@ -59,7 +71,7 @@ jobs:
 
       - name: Break issue into goals (LLM, loud failure)
         env:
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           MODEL: thinkingmachines/inkling:free
@@ -103,7 +115,7 @@ jobs:
 
       - name: Delegate goals as sub-issues
         env:
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -178,3 +190,48 @@ jobs:
             echo "orchestrator marker already present; skipping summary comment"
           fi
           gh issue edit "$ISSUE_NUMBER" --add-label "triage/accepted"
+
+      # Chain to the TL. `github.token`-created `goal/tl` label events do NOT
+      # start a new run, so each goal that is still at the TL entry state is
+      # handed off with an explicit `workflow_dispatch`. Goals already at a
+      # later state are skipped. Runs ONLY after delegation succeeded.
+      - name: Dispatch next role (Tech Lead)
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # A `gh` query failure or a failed dispatch is LOUD (parent comment +
+          # non-zero exit). Re-applying `ai-orchestrate` is safe: existing goals
+          # are deduped and already-progressed goals are not re-dispatched.
+          on_error() {
+            local code=$?
+            trap - ERR
+            gh issue comment "$ISSUE_NUMBER" --body "<!-- orchestrator:v1-error -->
+          Orchestrator could not dispatch the Tech Lead for one or more goals (exit ${code}). Goals already created are kept; re-apply the \`ai-orchestrate\` label to retry (existing goals are skipped, progressed goals are not re-dispatched)." || true
+            echo "::error::orchestrator goal dispatch failed (exit ${code})"
+            exit "$code"
+          }
+          trap on_error ERR
+
+          GOALS_JSON="$(gh issue list --label ai-goal --state all \
+            --search "in:title \"from #${ISSUE_NUMBER}\"" \
+            --json number,title,labels)"
+
+          # Only THIS parent's goals (exact title suffix) still at `goal/tl`
+          # and not escalated to `needs-human`.
+          TARGETS="$(printf '%s' "$GOALS_JSON" | jq -r \
+            --arg suffix "(from #${ISSUE_NUMBER})" \
+            '.[] | select(.title | endswith($suffix)) | select(([.labels[].name] | index("goal/tl")) != null) | select(([.labels[].name] | index("needs-human")) == null) | .number')"
+
+          if [ -z "$TARGETS" ]; then
+            echo "No goals at goal/tl; nothing to dispatch."
+            exit 0
+          fi
+
+          while IFS= read -r GOAL_NUMBER; do
+            [ -n "$GOAL_NUMBER" ] || continue
+            echo "Dispatching agent-techlead for goal #${GOAL_NUMBER}"
+            gh workflow run agent-techlead.yml --repo "${{ github.repository }}" --ref dev -f issue_number="${GOAL_NUMBER}"
+          done <<< "$TARGETS"

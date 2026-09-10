@@ -6,29 +6,40 @@ permissions: {}
 # TL role: goal issue -> precise, testable implementation spec (LLM) ->
 # `<!-- tl:v1 -->` comment -> `goal/ready`.
 # Fires when a role adds the `goal/tl` label to a goal issue (PO delegation or a
-# revision re-entry). Uses GITHUB_TOKEN with `issues: write` only.
+# revision re-entry). Uses GITHUB_TOKEN with `issues: write` + `actions: write` (to dispatch the next role).
 # No push / PR / merge steps — agents never write code or branches.
 # Config/LLM errors are LOUD (issue comment + non-zero exit) — no fallback.
+#
+# Chaining: a `GITHUB_TOKEN`-made `goal/ready` label does not start a new run,
+# so this role dispatches `agent-programmer` explicitly (see STATE-MACHINE.md
+# §8). The `issues: labeled` trigger stays for human/manual starts and re-runs.
 on:
   issues:
     types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to process"
+        required: true
 
 jobs:
   techlead:
-    # Run only if the `goal/tl` label is present and the trigger is human/agent
-    # (never another bot, so a token-made label edit cannot re-trigger us).
+    # Run if the `goal/tl` label is present and the trigger is human/agent, or on
+    # an explicit dispatch from the PO.
     if: >-
-      contains(github.event.issue.labels.*.name, 'goal/tl') &&
-      github.event.issue.user.type != 'Bot' &&
-      github.event.sender.type != 'Bot'
+      github.event_name == 'workflow_dispatch' ||
+      (contains(github.event.issue.labels.*.name, 'goal/tl') &&
+       github.event.issue.user.type != 'Bot' &&
+       github.event.sender.type != 'Bot')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
-      group: agent-techlead-${{ github.event.issue.number }}
+      group: agent-techlead-${{ github.event.issue.number || inputs.issue_number }}
       cancel-in-progress: false
     permissions:
       contents: read
       issues: write
+      actions: write
 
     steps:
       - uses: actions/checkout@v4
@@ -51,7 +62,7 @@ jobs:
 
       - name: Write spec (LLM, loud failure)
         env:
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           MODEL: thinkingmachines/inkling:free
@@ -157,3 +168,18 @@ jobs:
           gh issue comment "$ISSUE_NUMBER" --body-file /tmp/tl_comment.md
 
           gh issue edit "$ISSUE_NUMBER" --remove-label "goal/tl" --add-label "goal/ready"
+
+      # Chain to the Programmer. A `github.token`-made `goal/ready` label does
+      # not start a new run, so hand off with an explicit dispatch. Runs ONLY
+      # after the spec was written and the goal reached `goal/ready`.
+      - name: Dispatch next role (Programmer)
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh workflow run agent-programmer.yml --repo "${{ github.repository }}" --ref dev -f issue_number="${ISSUE_NUMBER}"; then
+            gh issue comment "$ISSUE_NUMBER" --body "**Tech Lead could not dispatch the Programmer.** The spec was written and the goal is at \`goal/ready\`, but the automated hand-off failed. Re-apply \`goal/ready\` (or run the \`agent-programmer\` workflow manually with \`issue_number=${ISSUE_NUMBER}\`) to continue." || true
+            echo "::error::failed to dispatch agent-programmer for issue ${ISSUE_NUMBER}"
+            exit 1
+          fi

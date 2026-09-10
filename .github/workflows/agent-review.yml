@@ -9,28 +9,40 @@ permissions: {}
 # `needs-human`. A `done` verdict can also terminate the parent
 # (`status:done` + `<!-- parent-done:v1 -->`), never auto-closed.
 # Fires when the Programmer adds the `goal/review` label to a goal issue.
-# Uses GITHUB_TOKEN with `issues: write` only. No push / PR / merge steps.
+# Uses GITHUB_TOKEN with `issues: write` + `actions: write` (to dispatch the next role). No push / PR / merge steps.
 # Config/LLM errors are LOUD (issue comment + non-zero exit) — no fallback.
+#
+# Chaining: a `GITHUB_TOKEN`-made `goal/tl` label does not start a new run, so a
+# `revise` verdict dispatches `agent-techlead` explicitly (see STATE-MACHINE.md
+# §8). A `done` verdict is terminal and dispatches nothing. The
+# `issues: labeled` trigger stays for human/manual starts and re-runs.
 on:
   issues:
     types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to process"
+        required: true
 
 jobs:
   review:
-    # Run only if the `goal/review` label is present and the trigger is human/agent
-    # (never another bot, so a token-made label edit cannot re-trigger us).
+    # Run if the `goal/review` label is present and the trigger is human/agent,
+    # or on an explicit dispatch from the Programmer.
     if: >-
-      contains(github.event.issue.labels.*.name, 'goal/review') &&
-      github.event.issue.user.type != 'Bot' &&
-      github.event.sender.type != 'Bot'
+      github.event_name == 'workflow_dispatch' ||
+      (contains(github.event.issue.labels.*.name, 'goal/review') &&
+       github.event.issue.user.type != 'Bot' &&
+       github.event.sender.type != 'Bot')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
-      group: agent-review-${{ github.event.issue.number }}
+      group: agent-review-${{ github.event.issue.number || inputs.issue_number }}
       cancel-in-progress: false
     permissions:
       contents: read
       issues: write
+      actions: write
     env:
       # Cap owned by the PO; see .agents/orchestrator/STATE-MACHINE.md §7.
       MAX_REVISE: "3"
@@ -60,7 +72,7 @@ jobs:
 
       - name: Review deliverable + apply verdict (LLM, loud failure)
         env:
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           MODEL: thinkingmachines/inkling:free
@@ -239,3 +251,27 @@ jobs:
           elif [ "$VERDICT" = "done" ]; then
             echo "no Parent: #N found on this goal; no parent termination to run"
           fi
+
+      # Chain back to the TL on a `revise` verdict. A `github.token`-made
+      # `goal/tl` label does not start a new run, so hand off with an explicit
+      # dispatch. Escalation to `needs-human` and a `done` verdict dispatch
+      # nothing (the parent termination already ran inline above).
+      - name: Dispatch next role (Tech Lead, on revise)
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          LABELS="$(gh issue view "$ISSUE_NUMBER" --json labels --jq '[.labels[].name] | join(",")')"
+          case ",${LABELS}," in
+            *,goal/tl,*)
+              if ! gh workflow run agent-techlead.yml --repo "${{ github.repository }}" --ref dev -f issue_number="${ISSUE_NUMBER}"; then
+                gh issue comment "$ISSUE_NUMBER" --body "**PO could not dispatch the Tech Lead for revision.** The verdict was \`revise\` and the goal is at \`goal/tl\`, but the automated hand-off failed. Re-apply \`goal/tl\` (or run the \`agent-techlead\` workflow manually with \`issue_number=${ISSUE_NUMBER}\`) to continue." || true
+                echo "::error::failed to dispatch agent-techlead for issue ${ISSUE_NUMBER}"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "No revision dispatch needed (labels: ${LABELS})."
+              ;;
+          esac

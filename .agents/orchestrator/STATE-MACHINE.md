@@ -254,3 +254,82 @@ Runs only after a `done` verdict:
 A failed child lookup is a loud failure (no `|| true` treated as empty); the
 review step wraps its work in an `ERR` trap that posts a visible comment and
 exits non-zero.
+
+---
+
+## 8. Role chaining via `workflow_dispatch` (v1)
+
+### Why label-only chaining fails
+
+Every role advances the loop by editing an issue label with `GITHUB_TOKEN`
+(e.g. the PO creates a goal and applies `goal/tl`; the TL applies `goal/ready`;
+the Programmer applies `goal/review`; the PO applies `goal/tl` on revise).
+GitHub suppresses workflow runs for events a `GITHUB_TOKEN` produces:
+
+> "When you use the repository's `GITHUB_TOKEN` to perform tasks, events
+> triggered by the `GITHUB_TOKEN` will not create a new workflow run, with the
+> following exceptions: `workflow_dispatch` and `repository_dispatch` events
+> always create workflow runs."
+
+So the `issues: labeled` triggers alone leave the automated
+PO → TL → Programmer → PO-review chain dead: the next role never starts.
+(The bot-authored `if:` guard is a second, independent reason the token-made
+label edit would not be picked up even if the run *were* created.)
+
+### Chosen mechanism: explicit `workflow_dispatch`
+
+`workflow_dispatch` is an official exception to the suppression rule, so each
+role explicitly dispatches the next one after its own work succeeds. No App or
+PAT identity is introduced — the same `GITHUB_TOKEN` is used, and the guard
+short-circuits on `github.event_name == 'workflow_dispatch'` so the dispatch
+path never evaluates `github.event.issue.*`.
+
+- Every role workflow adds a `workflow_dispatch` trigger with a required
+  `issue_number` input, alongside the original `issues: types: [labeled]`.
+- Every role job adds `actions: write` to its job permissions (the minimum
+  needed to call `gh workflow run`); `contents: read` and `issues: write` stay.
+- Every concurrency group and every `ISSUE_NUMBER` env uses
+  `${{ github.event.issue.number || inputs.issue_number }}` so both triggers
+  resolve the issue. `cancel-in-progress: false` is unchanged (§5).
+- The final step of each role dispatches the next role with
+  `gh workflow run <next>.yml --repo "<repo>" --ref dev -f issue_number="<N>"`
+  and `GH_TOKEN: ${{ github.token }}`. A failed dispatch posts a loud comment
+  on the issue and exits non-zero.
+- Because `workflow_dispatch` has no `github.event.issue`, no step may read
+  `github.event.issue.*` outside the job `if:`; the `ISSUE_NUMBER` env is the
+  only source of the issue number.
+
+### Dispatch chain
+
+| Role (`workflow`) | On success dispatches | Notes |
+|---|---|---|
+| PO `agent-orchestrate` | `agent-techlead` for each goal | Per goal still at `goal/tl`; goals already at a later state are skipped. |
+| TL `agent-techlead` | `agent-programmer` | After the spec is written and the goal is at `goal/ready`. |
+| Programmer `agent-programmer` | `agent-review` | Only when the success path moved the goal to `goal/review`; `needs-human` dispatches nothing. |
+| PO `agent-review` | `agent-techlead` | Only on a `revise` verdict; a `done` verdict is terminal (parent termination runs inline) and an escalation to `needs-human` dispatches nothing. |
+
+### Label triggers remain
+
+The `issues: labeled` triggers are kept on every role for human/manual starts
+and re-runs (a human adding `ai-orchestrate`, or re-applying `goal/tl` /
+`goal/ready` / `goal/review` after fixing a failure). `workflow_dispatch` is
+additive, not a replacement; both paths share the same role logic.
+
+### Trade-off
+
+Chaining costs **one extra Actions run per handoff** (the dispatching run and
+the dispatched run are separate workflow runs). With the free-tier LLM, a
+burst of hand-offs across many goals can hit provider rate limits (`429`); this
+is mitigated by `.github/scripts/llm_json.sh`, which retries transport errors
+with jittered backoff and honors `Retry-After` (§1). The concurrency groups
+(`agent-<role>-<issue>`, `cancel-in-progress: false`) still serialize a role
+against itself per issue, so a re-dispatch cannot run a role twice in parallel
+on the same issue.
+
+### Idempotency and retries
+
+Each role remains idempotent per attempt (§6/§7): re-running a role for an
+attempt that already has its marker short-circuits the LLM and only re-applies
+the transition. Repeated dispatches are therefore safe, and a failed hand-off
+can be retried by re-applying the role's entry label or re-running the
+workflow manually with `issue_number`.
