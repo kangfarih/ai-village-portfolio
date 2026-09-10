@@ -46,6 +46,7 @@ jobs:
         run: |
           gh label create "ai-orchestrate" --color "0E8A16" --description "Opt-in to orchestrator delegation" 2>/dev/null || true
           gh label create "ai-goal" --color "1D76DB" --description "Orchestrator-delegated sub-goal" 2>/dev/null || true
+          gh label create "triage/accepted" --color "0E8A16" --description "Triage accepted, ready for work" 2>/dev/null || true
 
       - name: Break issue into goals (LLM with fallback)
         env:
@@ -90,7 +91,7 @@ jobs:
               CONTENT="$(jq -r '.choices[0].message.content // ""' /tmp/llm_resp.json)"
               CLEAN="$(printf '%s' "$CONTENT" | sed '/^```/d')"
               if printf '%s' "$CLEAN" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1; then
-                NORMALIZED="$(printf '%s' "$CLEAN" | jq '[.[] | {title: (.title // ""), detail: (.detail // "")}] | map(select(.title != ""))')"
+                NORMALIZED="$(printf '%s' "$CLEAN" | jq '[.[] | {title: ((try .title catch "") // ""), detail: ((try .detail catch "") // "")}] | map(select(.title != ""))')"
                 if [ "$(printf '%s' "$NORMALIZED" | jq 'length')" -gt 0 ]; then
                   printf '%s' "$NORMALIZED" | jq '.' > goals.json
                   LLM_OK=true
@@ -114,6 +115,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          if [ "$(gh issue view "$ISSUE_NUMBER" --json comments --jq '[.comments[].body] | join("\n") | contains("<!-- orchestrator:v1 -->")')" = "true" ]; then
+            echo "already orchestrated, skipping"
+            exit 0
+          fi
           COUNT="$(jq '[.[:6][]] | length' goals.json)"
           if [ "$COUNT" -eq 0 ]; then
             echo "No goals to delegate - exiting without changes."
@@ -130,6 +135,7 @@ jobs:
             echo "Created: ${URL}"
           done
           {
+            printf '<!-- orchestrator:v1 -->\n'
             printf 'Orchestrator broke this issue into %s goal(s):\n\n' "$COUNT"
             cat /tmp/goal_links.md
             printf '\nAgent: pure GitHub workflow agent | Model: thinkingmachines/inkling:free\n'

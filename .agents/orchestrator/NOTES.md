@@ -75,6 +75,33 @@ sub-issue per goal, posts a single summary comment on the parent, and adds
   `git status -sb` post-push — SHA unknowable before commit, so recorded there,
   not invented here).
 
+## Review fixes (dev only — NEVER main)
+
+Findings (reviewer report, `agent-orchestrate.yml` on `dev`):
+
+1. (Blocking, ~line 93) jq normalization `[.[] | {title: (.title // ""), ...}]`
+   crashed on arrays of non-objects (e.g. `["foo"]`): `.title` on a string
+   throws, and `set -euo pipefail` killed the step red, breaking the
+   "never fails" guarantee.
+   Fix: `try/catch` normalization —
+   `[.[] | {title: ((try .title catch "") // ""), detail: ((try .detail catch "") // "")}]`.
+2. (Blocking, ~line 137) `gh issue edit --add-label "triage/accepted"`
+   assumed the label exists, but the Ensure step only created
+   `ai-orchestrate`/`ai-goal`.
+   Fix: added `gh label create "triage/accepted" --color "0E8A16"
+   --description "Triage accepted, ready for work" 2>/dev/null || true` to the
+   Ensure step. `triage/accepted` is now self-created by both workflows
+   (triage + orchestrate) and should be added to `.github/labels.yml` later —
+   `labels.yml` deliberately NOT touched in this task.
+3. (Warning→fix, idempotency) the delegate loop unconditionally created
+   sub-issues on every run, so re-adding `ai-orchestrate` duplicated work.
+   Fix: guard at the START of the delegate step — if the parent issue already
+   has a comment containing `<!-- orchestrator:v1 -->` (via
+   `gh issue view "$ISSUE_NUMBER" --json comments --jq '...contains("<!-- orchestrator:v1 -->")'`),
+   echo `already orchestrated, skipping` and `exit 0`. The parent comment the
+   workflow posts now starts with the literal marker
+   `<!-- orchestrator:v1 -->` as its first line.
+
 ## Open risks / follow-ups
 
 - **LLM call unverified until a live `ai-orchestrate` event**: YAML parse +
