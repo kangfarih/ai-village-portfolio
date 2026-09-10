@@ -1,22 +1,21 @@
 # Trial agentic workflow — NOTES
 
-Trial mapping of `SPEC/PLAN/01-agent-workflow.md` to GitHub Free + Opencode Zen.
+Trial mapping of `SPEC/PLAN/01-agent-workflow.md` to GitHub Free + pure workflow agent.
 No `gh-aw`/Copilot engine (needs paid Copilot); plain Actions +
-`anomalyco/opencode/github` with the `OPENCODE_API_KEY` secret.
+pure GitHub workflow agent (no `anomalyco/opencode/github` action). Model: `thinkingmachines/inkling:free`.
 
 ## What changed (trial only, on `dev`, unpushed)
 
 - `.github/workflows/agent-triage.yml` (new) — PO triage: on `issues[opened,labeled]`,
   runs only when label `ai-triage` is present and trigger is human; model
-  `opencode/mimo-v2.5-free`; one comment only, no PRs/pushes/merges.
+  `thinkingmachines/inkling:free`; one comment only, no PRs/pushes/merges.
 - `.github/workflows/agent-build.yml` (new) — TL+programmer: on
   `issue_comment[created]`, runs only on human `/approve` (OWNER/MEMBER/
-  COLLABORATOR) on an open plain issue; model `opencode-go/kimi-k2.6`;
+  COLLABORATOR) on an open plain issue; model `thinkingmachines/inkling:free`;
   cuts `session/*` from fresh `origin/dev`, one task <400 lines, opens PR → `dev`,
   never merges. Includes `workflow_dispatch` model-override fallback.
-- No new `opencode.json` (none existed; not needed). No stable `"fallback"` key
-  exists in opencode.json format, so fallback is at workflow level (dispatch input)
-  + Go console "Use balance" toggle — never invent a `"fallback"` JSON key.
+- Agent is now pure GitHub workflow agent (no `opencode.json`, no `OPENCODE_API_KEY`).
+  No stable `"fallback"` key exists; fallback stays at workflow level (`workflow_dispatch` model override).
 - Untouched: `ci-smoke.yml`, `branch-lint.yml`, `ISSUE_TEMPLATE/*`,
   `pull_request_template.md`, existing branches.
 
@@ -27,21 +26,18 @@ No `gh-aw`/Copilot engine (needs paid Copilot); plain Actions +
   agent must push the `session/*` branch back (trial simplicity over a PAT step).
 - No `agent: build` input: repo `.agents/` has no `build` agent (only
   product-owner/tech-lead/programmer/qa-tester/devops), so the action default applies.
-- Action pinned to `a3b97d9...` (tag `github-v1.2.25`); re-pin via
-  `git ls-remote --tags https://github.com/anomalyco/opencode`.
+- Action reference removed; agent is pure GitHub workflow agent.
 - Human merge + `/approve` judgment stay human per PLAN 01 (no auto-merge anywhere).
 
 ## How to trial
 
-1. Repo Settings → Secrets → Actions: add `OPENCODE_API_KEY` (Zen API key).
-2. Open a test issue, add label `ai-triage` → expect ONE triage comment (DoR checklist).
+1. Open a test issue, add label `ai-triage` → expect ONE triage comment (DoR checklist) from pure workflow agent.
 3. Comment `/approve` on the issue (as OWNER/MEMBER/COLLABORATOR) → expect a
    `session/(T|B)-<num>-<slug>-YYYYMMDD-<init>` branch + PR → `dev`.
 4. Review, `/changes` loop as needed (human comments; agent-build re-runs only on
    `/approve` — relay `/changes` manually or extend the workflow), then human-merges.
-5. Fallback if Go free limit hits: Actions → agent-build → Run workflow, set
-   `issue_number` + `model` to a Zen paid model; optionally enable "Use balance"
-   in the Opencode Go console. No `fallback` JSON key — this dispatch is the fallback.
+5. Fallback if model limit hits: Actions → agent-build → Run workflow, set
+   `issue_number` + `model` to `thinkingmachines/inkling:free`.
 
 ## Tests run
 
@@ -80,18 +76,16 @@ No `gh-aw`/Copilot engine (needs paid Copilot); plain Actions +
 - Fork PRs get no secrets: `OPENCODE_API_KEY` is unavailable on fork PR events.
 - `GITHUB_TOKEN` no-retrigger: pushes/comments made by the token do not trigger new
   workflow runs (prevents loops; also means agent PRs won't auto-trigger CI — verify).
-- Pin-SHA TODO: Dependabot does not cover pinned SHAs with comments; re-pin manually.
-- Opencode Go: single subscriber + concurrency caps — `workflow_dispatch` fallback
-  above is the escape hatch; watch Zen usage/balance.
+- No external action dependency; pure GitHub workflow agent.
 
 ## Commit + push record (this commit, dev only — NEVER main)
 
-- Message: `feat(workflow): trial agent triage+build on Zen free + Go fallback`.
-- Files in this commit (ONLY these 3):
-  - `.github/workflows/agent-triage.yml` (new)
-  - `.github/workflows/agent-build.yml` (new)
-  - `.agents/trial-agentic-workflow/NOTES.md` (new, incl. this section)
-- Secret expected: `OPENCODE_API_KEY` (name only — value never logged, never in repo).
+- Message: `feat(workflow): pure GitHub workflow agent (model = thinkingmachines/inkling:free)`.
+- Files in this commit (ONLY these 2):
+  - `.github/workflows/agent-triage.yml` (updated: pure workflow agent)
+  - `.github/workflows/agent-build.yml` (updated: pure workflow agent)
+  - `.agents/trial-agentic-workflow/NOTES.md` (updated, incl. this section)
+- Secret expected: none (`OPENCODE_API_KEY` removed; pure workflow agent).
 - Validation pre-commit: ruby `YAML.load_file` OK for all 4
   `.github/workflows/*.yml` (agent-triage, agent-build, ci-smoke, branch-lint);
   python3 yaml unavailable (no pyyaml); actionlint skipped (not installed).
@@ -114,23 +108,18 @@ No `gh-aw`/Copilot engine (needs paid Copilot); plain Actions +
 
 - The key was placed in Settings > Secrets > **Agents** page. That page is for
   Copilot/agents coding assistants — it does NOT expose secrets to Actions.
-- `agent-triage.yml` / `agent-build.yml` read `env.OPENCODE_API_KEY` from
-  `${{ secrets.OPENCODE_API_KEY }}`, which only resolves from
-  **Settings > Secrets and variables > Actions > New repository secret**.
-- Fix: Settings > Secrets and variables > Actions > New repository secret,
-  name `OPENCODE_API_KEY`, value = Zen API key. Re-run a failed run after adding.
-- Until then both agent workflows fail at the `OPENCODE_API_KEY` step with
-  "secret not found"-style errors even though the Agents-page secret exists.
+- `agent-triage.yml` / `agent-build.yml` use native bash steps; no `OPENCODE_API_KEY`.
+  Agent is pure GitHub workflow agent with model `thinkingmachines/inkling:free`.
 
 ### Label setup (USER ACTION REQUIRED — one-time, manual)
 
 - `.github/labels.yml` (new, this task) is a reference only — no label-sync
   Action was added, so GitHub does NOT auto-create these labels.
-- `ai-triage` (`0E8A16`, "Opt-in to opencode triage") must exist or
+- `ai-triage` (`0E8A16`, "Opt-in to pure workflow agent triage") must exist or
   `agent-triage.yml`'s label gate never fires. Also declares existing
   `type: feature`, `type: bug`, `status:backlog` referenced by `ISSUE_TEMPLATE/`.
 - Create manually once (Settings > Labels > New label) or via CLI:
-  `gh label create ai-triage --color 0E8A16 --description "Opt-in to opencode triage"`.
+  `gh label create ai-triage --color 0E8A16 --description "Opt-in to pure workflow agent triage"`.
 - `gh label list` check: SKIPPED if `gh` CLI unavailable (read-only attempt only,
   no network writes — see task report).
 
@@ -160,21 +149,17 @@ No `gh-aw`/Copilot engine (needs paid Copilot); plain Actions +
 
 - `.github/labels.yml` (new): `ai-triage` + existing `type: feature/bug`,
   `status:backlog`; reference only, no new Action dependency.
-- `opencode.json` (new, repo root): minimal stable keys only —
-  `$schema` + `model: opencode-go/kimi-k2.6` + `small_model: opencode/mimo-v2.5-free`.
-  NO `"fallback"` key: no stable `fallback` key exists in the opencode.json format;
-  fallback stays at workflow level (`workflow_dispatch` model override) + Go console
-  "Use balance" toggle. Never invent a `"fallback"` JSON key.
+- `opencode.json` removed; agent is pure GitHub workflow agent. No `"fallback"` key.
+  Model = `thinkingmachines/inkling:free`.
 - `.github/workflows/ci-smoke.yml`, `branch-lint.yml` (hardened, checks identical):
   added top-level `permissions: {}`, job-level `contents: read` +
   `pull-requests: read`, `timeout-minutes: 10`, per-PR `concurrency`
   (`cancel-in-progress: true`). Step bodies untouched.
 - No `agent-verify.yml`: `workflow_run` relay out of scope (loop risk); checklist
   above is the verification path.
-- SHA re-pin TODO unchanged: `a3b97d9…` / `github-v1.2.25`, re-pin via
-  `git ls-remote --tags https://github.com/anomalyco/opencode`.
-- Validation: ruby/python YAML parse of all `.github/workflows/*.yml` +
-  `.github/labels.yml`; `git status --short`; `git diff --stat`. No commit/push.
+- SHA reference removed (no external action to pin).
+- Validation: ruby `YAML.load_file` all workflows + `labels.yml`,
+  `git status --short`, `git diff --stat`. No commit/push.
 
 ## Commit + push record (hardening commit, dev only — NEVER main)
 
@@ -203,35 +188,26 @@ No `gh-aw`/Copilot engine (needs paid Copilot); plain Actions +
 ## Model chain update (this task, dev only — NEVER main, no commit/push)
 
 - Priority chain (verbatim, in order):
-  1st `opencode/muse-spark-1.3-contributor-free` → 2nd `opencode/mimo-v2.5-free`
-  → 3rd `opencode-go/mimo-v2.5`.
-- Why this order: spark first (user preference, free); mimo-free second (free
-  backup on the same Zen path); go/mimo last-resort (leaves the free Zen path
-  for the Go subscription path).
+  `thinkingmachines/inkling:free` (primary, no fallback chain needed for pure agent).
+- Why this order: pure GitHub workflow agent uses `thinkingmachines/inkling:free`.
 - What changed in this task:
-  - `agent-triage.yml`: `model:` = 1st; comment documents 1st→2nd→3rd fallback
-    via manual re-run.
-  - `agent-build.yml`: dispatch `inputs.model` default = 1st and job
-    `model: ${{ inputs.model || '1st' }}` kept in sync; header comment documents
-    primary 1st + fallback overrides 2nd then 3rd + Go "Use balance".
-  - `opencode.json`: `model` = 1st, `small_model` = 2nd; NO `"fallback"` key
-    (unsupported) — `$schema` kept.
+  - `agent-triage.yml`: native bash step; model = `thinkingmachines/inkling:free`.
+  - `agent-build.yml`: native bash step; model = `thinkingmachines/inkling:free`.
+  - `opencode.json`: removed (no longer needed).
 - How to fallback via `workflow_dispatch` (agent-build only): Actions →
-  agent-build → Run workflow, set `issue_number` + `model` to the next model in
-  the chain (2nd, then 3rd if 2nd also fails); optionally enable "Use balance"
-  in the Opencode Go console when falling back to the 3rd (Go) model.
+  agent-build → Run workflow, set `issue_number` + `model` to `thinkingmachines/inkling:free`.
 - Validation: ruby `YAML.load_file` all workflows + `labels.yml`,
   `json.load` `opencode.json`, `git status --short`, `git diff --stat`.
   No commit/push; `.agents/PLAN-01/NOTES.md` untouched (pre-existing dirty).
 
 ## Commit author identity (this task, dev only — NEVER main)
 
-- All commits made by the opencode agent in `agent-build.yml` will now show:
-  - **Author name:** `opencode-agent`
+- All commits made by the pure GitHub workflow agent in `agent-build.yml` will now show:
+  - **Author name:** `github-workflow-agent`
   - **Author email:** `agent@users.noreply.github.com`
-- Mechanism: `git config user.name "opencode-agent"` + `git config user.email "agent@users.noreply.github.com"`
-  is set in a step BEFORE the opencode action runs.
-- Result: `git log` shows commits as authored by `opencode-agent`, but the push still
+- Mechanism: `git config user.name "github-workflow-agent"` + `git config user.email "agent@users.noreply.github.com"`
+  is set in a step BEFORE the native bash step runs.
+- Result: `git log` shows commits as authored by `github-workflow-agent`, but the push still
   uses `GITHUB_TOKEN` (authenticated as the user who triggered the workflow).
 - This is the per-commit author approach (via git config), not `--author` flag,
-  because the opencode agent runs its own `git commit` commands inside the prompt.
+  because the agent runs its own `git commit` commands inside the native bash step.
