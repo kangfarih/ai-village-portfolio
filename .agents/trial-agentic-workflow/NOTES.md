@@ -199,3 +199,27 @@ No `gh-aw`/Copilot engine (needs paid Copilot); plain Actions +
   don't auto-trigger due to `GITHUB_TOKEN` no-retrigger).
 - Left dirty on purpose: `M .agents/PLAN-01/NOTES.md` (pre-existing unrelated
   follow-up note, out of trial scope — not staged).
+
+## Model chain update (this task, dev only — NEVER main, no commit/push)
+
+- Priority chain (verbatim, in order):
+  1st `opencode/muse-spark-1.3-contributor-free` → 2nd `opencode/mimo-v2.5-free`
+  → 3rd `opencode-go/mimo-v2.5`.
+- Why this order: spark first (user preference, free); mimo-free second (free
+  backup on the same Zen path); go/mimo last-resort (leaves the free Zen path
+  for the Go subscription path).
+- What changed in this task:
+  - `agent-triage.yml`: `model:` = 1st; comment documents 1st→2nd→3rd fallback
+    via manual re-run.
+  - `agent-build.yml`: dispatch `inputs.model` default = 1st and job
+    `model: ${{ inputs.model || '1st' }}` kept in sync; header comment documents
+    primary 1st + fallback overrides 2nd then 3rd + Go "Use balance".
+  - `opencode.json`: `model` = 1st, `small_model` = 2nd; NO `"fallback"` key
+    (unsupported) — `$schema` kept.
+- How to fallback via `workflow_dispatch` (agent-build only): Actions →
+  agent-build → Run workflow, set `issue_number` + `model` to the next model in
+  the chain (2nd, then 3rd if 2nd also fails); optionally enable "Use balance"
+  in the Opencode Go console when falling back to the 3rd (Go) model.
+- Validation: ruby `YAML.load_file` all workflows + `labels.yml`,
+  `json.load` `opencode.json`, `git status --short`, `git diff --stat`.
+  No commit/push; `.agents/PLAN-01/NOTES.md` untouched (pre-existing dirty).

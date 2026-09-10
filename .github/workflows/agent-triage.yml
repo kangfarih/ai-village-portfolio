@@ -36,9 +36,13 @@ jobs:
 
       # Pinned to anomalyco/opencode tag github-v1.2.25 (commit a3b97d9...).
       # Re-pin to a newer github-v* tag with: git ls-remote --tags https://github.com/anomalyco/opencode
+      # Model chain (priority order): 1st opencode/muse-spark-1.3-contributor-free
+      # -> 2nd opencode/mimo-v2.5-free -> 3rd opencode-go/mimo-v2.5.
+      # Fallback is via manual re-run (workflow_dispatch override on agent-build);
+      # triage itself always runs the primary model above.
       - uses: anomalyco/opencode/github@a3b97d9090ccf4aa9ac32268486283e3131e36b4 # github-v1.2.25
         with:
-          model: opencode/mimo-v2.5-free
+          model: opencode/muse-spark-1.3-contributor-free
           # No `agent:` input: repo .agents/ has no `build` agent
           # (product-owner/tech-lead/programmer/qa-tester/devops only), so the action default applies.
           use_github_token: true

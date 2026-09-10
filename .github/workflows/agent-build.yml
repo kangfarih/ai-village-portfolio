@@ -5,9 +5,11 @@ permissions: {}
 
 # TL + programmer trial (PLAN 01: /approve -> session branch -> PR -> dev).
 # Fires when a maintainer comments `/approve` on an OPEN issue (not a PR).
-# Workflow-level fallback: if the Go free-model limit is hit, a maintainer
-# re-runs via `workflow_dispatch` overriding `model` with a Zen paid model
-# (see also Go console "Use balance" toggle in trial NOTES).
+# Model chain (priority order): primary opencode/muse-spark-1.3-contributor-free,
+# fallback overrides opencode/mimo-v2.5-free then opencode-go/mimo-v2.5.
+# Workflow-level fallback: if the primary-model limit is hit, a maintainer
+# re-runs via `workflow_dispatch` overriding `model` with the next model in
+# the chain (see also Go console "Use balance" toggle in trial NOTES).
 on:
   issue_comment:
     types: [created]
@@ -20,8 +22,8 @@ on:
         description: "Issue number to build (fallback re-run)"
         required: true
       model:
-        description: "Model override (e.g. Zen paid model when Go free limit is hit)"
-        default: "opencode-go/kimi-k2.6"
+        description: "Model override (fallback: opencode/mimo-v2.5-free, then opencode-go/mimo-v2.5)"
+        default: "opencode/muse-spark-1.3-contributor-free"
         required: false
 
 jobs:
@@ -64,7 +66,7 @@ jobs:
       # Re-pin to a newer github-v* tag with: git ls-remote --tags https://github.com/anomalyco/opencode
       - uses: anomalyco/opencode/github@a3b97d9090ccf4aa9ac32268486283e3131e36b4 # github-v1.2.25
         with:
-          model: ${{ inputs.model || 'opencode-go/kimi-k2.6' }}
+          model: ${{ inputs.model || 'opencode/muse-spark-1.3-contributor-free' }}
           # No `agent:` input: repo .agents/ has no `build` agent, action default applies.
           use_github_token: true
           prompt: |

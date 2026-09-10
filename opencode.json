@@ -1,5 +1,5 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "opencode-go/kimi-k2.6",
+  "model": "opencode/muse-spark-1.3-contributor-free",
   "small_model": "opencode/mimo-v2.5-free"
 }
