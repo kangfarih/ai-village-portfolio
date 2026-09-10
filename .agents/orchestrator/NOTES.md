@@ -2123,3 +2123,113 @@ tool for the `gh`/`git`/label glue.
 **Commit + push (dev only — NEVER main):**
 - `fix(agents): retry HTTP 200 empty-content + rotate on free-tier cap` to
   `origin/dev`; SHA + push range recorded in the task report (not invented here).
+
+---
+
+# Duplicate-run fix: label-scoped triage + idempotent orchestration (`dev` only — NEVER main)
+
+## Symptom
+
+Recent runs showed duplicate work for a single issue: several `agent-triage`
+runs, then 3 `agent-orchestrate` runs, then duplicate `agent-techlead` runs.
+
+## Root causes
+
+1. **`agent-triage` `if:` was "label present".** The job-level `if:` first
+   clause was
+   `contains(github.event.issue.labels.*.name, 'ai-triage')`, so **any** later
+   label added to an already-triaged issue (e.g. `kind/*`, `priority/*`) made
+   the `issues: labeled` job match and re-run triage successfully. Each success
+   re-dispatched `agent-orchestrate` for the same issue.
+2. **`agent-orchestrate` had no idempotency guard.** A second dispatch (e.g. a
+   manual run racing the triage-dispatched run) re-ran the LLM and re-dispatched
+   `agent-techlead` for the same goals.
+
+## Changes
+
+- **`.github/workflows/agent-triage.yml`** — the job `if:` first clause is now
+  `github.event.label.name == 'ai-triage'` (label-scoped: fires only when the
+  `ai-triage` label itself is added), keeping
+  `github.event.issue.user.type != 'Bot' && github.event.sender.type != 'Bot'`.
+  The adjacent comment explains that other labels on an already-triaged issue no
+  longer re-run triage / re-dispatch the orchestrator. Nothing else in the file
+  changed (permissions, hand-off step, etc.).
+- **`.github/workflows/agent-orchestrate.yml`**
+  1. New `workflow_dispatch` input `force` (boolean, default `false`,
+     `"Re-run orchestration even if goals already exist"`); `issue_number`
+     unchanged.
+  2. New `Idempotency check` step (`id: guard`) immediately after the
+     `Document pure GitHub workflow agent` step, before the LLM. It sets
+     `skip=true` when the parent has the `<!-- orchestrator:v1 -->` success
+     marker **and** at least one child goal (`ai-goal`, title ending
+     `(from #<n>)`) or ticket (`ai-ticket`, body carrying the exact
+     `<!-- agent-ticket:v1 origin:#<n> -->` marker) exists. `FORCE=true`
+     bypasses it. Query failures are soft and treated as "proceed".
+  3. `if: steps.guard.outputs.skip != 'true'` added to each of `Break issue into
+     goals (LLM, loud failure)`, `Delegate goals as sub-issues`, and `Dispatch
+     next role (Tech Lead)`; their bodies are unchanged.
+  4. Top-of-file comment notes the idempotency guard / `force` input.
+- **`.agents/orchestrator/STATE-MACHINE.md`** — the triage section now states
+  triage fires only when the `ai-triage` label is added
+  (`github.event.label.name == 'ai-triage'`); §8 documents the orchestrator
+  idempotency guard, the `force=true` override, and that this prevents duplicate
+  TL dispatches. Nothing else changed.
+- **`.agents/orchestrator/NOTES.md`** (this section).
+
+## `force=true` escape hatch
+
+A manual Actions -> Run workflow with `force` checked (or
+`gh workflow run agent-orchestrate.yml -f issue_number=<N> -f force=true`)
+bypasses the guard and re-runs orchestration. Existing goals/tickets are still
+deduped by the delegate step, so the forced re-run does not duplicate children.
+
+## Verification (actual output)
+
+- `ruby -ryaml -e "YAML.load_file('<f>')"` -> `triage YAML OK`,
+  `orchestrate YAML OK`.
+- All `run:` blocks extracted (Ruby YAML) and `bash -n` each -> `bash -n OK` for
+  all 12 (5 triage + 7 orchestrate).
+- `grep -n "github.event.label.name" .github/workflows/agent-triage.yml` ->
+  line 21 present.
+- `grep -n "contains(github.event.issue.labels"` -> no match.
+- `grep -nE "skip != 'true'|id: guard|inputs.force"` on
+  `agent-orchestrate.yml` -> `id: guard` (line 68), `FORCE: ${{ inputs.force ||
+  false }}` (line 71), three `if: steps.guard.outputs.skip != 'true'` lines
+  (121, 180, 419).
+- Guard simulation against the extracted step with a mock `gh` (real `jq`):
+  - (a) `FORCE=true` -> `skip=false`
+  - (b) `MARKER=true GOALS=2` -> `skip=true`
+  - (c) `MARKER=true GOALS=0 TICKETS=0` -> `skip=false`
+  - (d) `MARKER=false GOALS=0` -> `skip=false`
+  - (e) query failure (`gh` exits 1) -> `skip=false` (proceeds)
+  - (f) `MARKER=true TICKETS=1 GOALS=0` -> `skip=true`
+  All pass.
+- `git status --short` before each commit shows only the intended files.
+
+## Commit + push record (dev only — NEVER main)
+
+- Commit 1 `3028174` —
+  `fix(agents): label-scoped triage + idempotent orchestrator to stop duplicate
+  runs`; files: `.github/workflows/agent-triage.yml`,
+  `.github/workflows/agent-orchestrate.yml`,
+  `.agents/orchestrator/STATE-MACHINE.md`.
+  `git push origin dev` OK (`e792a60..3028174  dev -> dev`).
+- Commit 2 (this NOTES record) —
+  `docs(agents): record duplicate-run fix and force escape hatch`; its own SHA
+  and push range are recorded in the task report (not invented here).
+
+## Open risks / follow-ups
+
+- **Live runner unverified.** The guard logic is proven by YAML/`bash -n` and a
+  mock-`gh` simulation only; the real `gh issue view/list` behaviour and the
+  `workflow_dispatch` boolean input have not run. First live check = a manually
+  re-dispatched `agent-orchestrate` on an already-orchestrated issue, confirming
+  the run is a no-op (no second LLM call, no duplicate TL dispatch), then
+  `force=true` to confirm the override.
+- **Guard query failure softens to "proceed".** A transient `gh` error with the
+  marker actually present would allow a duplicate orchestration; the delegate
+  step's per-goal/per-ticket dedupe keeps that from duplicating children, and the
+  `agent-orchestrate-<n>` concurrency group serializes runs per issue.
+- **`label.name` is only populated on a `labeled` event.** The triage workflow's
+  trigger is `issues: types: [labeled]`, so this is always set for the events it
+  handles; no other event can reach the job.
