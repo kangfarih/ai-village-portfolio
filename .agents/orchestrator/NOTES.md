@@ -1560,4 +1560,127 @@ is unchanged and no role inlines `curl`.
   defensive guard → `needs-human`. They are not migrated to tickets
   automatically; a human closes/re-labels them.
 
+---
+
+# Phase 5b — `agent-triage` LLM-classifies the issue `kind` (`dev` only — NEVER main)
+
+`agent-triage` no longer hardcodes `kind/task`. It now makes one `llm_json.sh`
+call (`--effort low`) to classify the issue into exactly one of
+`feature | bug | task | requirement | user-story` and applies the matching
+`kind/<kind>` label. Triage must stay green: any classification failure falls
+back to `kind/task`. `.github/scripts/llm_json.sh` is unchanged and the workflow
+inlines no `curl`.
+
+## What changed (ONLY these 3 files)
+
+- `.github/workflows/agent-triage.yml`
+  - **New step `Classify issue kind (LLM, never fails)` (`id: classify`)**,
+    inserted before the label step:
+    - fetches the issue with
+      `gh issue view "$ISSUE_NUMBER" --json title,body --jq '{title, body}'`
+      (`GH_TOKEN: ${{ github.token }}`); `|| echo '{}'` keeps a fetch failure
+      from breaking triage;
+    - writes the system prompt (exactly one of feature/bug/task/requirement/
+      user-story; requirement = spec/decision/acceptance-criteria; user-story =
+      "as a … I want … so that …"; bug = defect; feature = new capability; task
+      = anything else/chore) and the user file (`title + "\n\n" + body` via
+      `jq -n --arg`), so untrusted issue text is never shell-interpolated;
+    - calls `bash .github/scripts/llm_json.sh` with
+      `--out /tmp/triage_kind.json`,
+      `--schema 'type=="object" and (.kind=="feature" or .kind=="bug" or
+      .kind=="task" or .kind=="requirement" or .kind=="user-story")'`,
+      `--effort low`, and env `OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}`
+      / `MODEL: thinkingmachines/inkling:free`.
+    - **Never fails**: the helper runs inside `if … then … else … fi`, so a
+      non-zero exit (missing/invalid key, non-200, bad JSON) only logs an
+      `::warning::`; `KIND` defaults to `task`. On success `.kind` is read and
+      validated against the 5-kind set. `KIND` is exported via
+      `echo "kind=$KIND" >> "$GITHUB_OUTPUT"`.
+    - The key is passed only via `env` and is never echoed.
+  - **Apply triage labels** now reads `KIND: ${{ steps.classify.outputs.kind }}`
+    (defaulting to `task` when empty/unknown), self-heals all five
+    `kind/feature|bug|task|requirement|user-story` labels plus
+    `priority/important-soon` and `triage/accepted`
+    (`gh label create … 2>/dev/null || true`), and applies
+    `--add-label "priority/important-soon,kind/${KIND},triage/accepted"`. No
+    hardcoded `kind/task` remains.
+  - **Post triage comment** reads the same `steps.classify.outputs.kind` and
+    adds a `Classified kind: ${KIND}` line, keeping the existing DoR checklist,
+    the Agent/Model line, and the "Do NOT open PRs. Do NOT push. Do NOT merge."
+    line.
+  - Unchanged: the human-only `if:` guard, top-level `permissions: {}` + job
+    `contents: read` / `issues: write` / `pull-requests: read`, the
+    `fetch-depth: 1` + `persist-credentials: false` checkout, and the
+    `agent-triage-<n>` / `cancel-in-progress: false` concurrency.
+- `.agents/orchestrator/STATE-MACHINE.md` — the triage-owned-label note now says
+  `kind/<kind>` (not `kind/task`) and a new **Triage classification** subsection
+  documents the 5-kind LLM classification, the applied labels, the
+  `kind/task` fallback on any LLM failure ("triage must stay green"), and that
+  all model traffic goes through `llm_json.sh --effort low` with no inline
+  `curl`.
+- `.agents/orchestrator/NOTES.md` (this section).
+
+## Verification (actual output)
+
+- `ruby -ryaml -e "YAML.load_file('.github/workflows/agent-triage.yml')"` →
+  `YAML OK`; all 4 `run:` blocks extracted (Ruby YAML) and `bash -n` each →
+  `bash -n OK` for all 4. (`shellcheck` not installed on the host.)
+- Structural assertions:
+  - `bash .github/scripts/llm_json.sh` present once with the 5-kind `--schema`;
+  - **no** inline `curl` in the workflow;
+  - all five `gh label create "kind/…"` self-heal lines present;
+  - the only `--add-label` is
+    `"priority/important-soon,kind/${KIND},triage/accepted"` — no hardcoded
+    `kind/task` target;
+  - `OPENCODE_API_KEY` appears **only** as
+    `OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}` (no echo/reference in a
+    `run:` body);
+  - `id: classify` + `steps.classify.outputs.kind` wired into both the label and
+    comment steps;
+  - the helper call is the `if bash .github/scripts/llm_json.sh` condition.
+- **Mock `llm_json.sh` + mock `gh`, driving the extracted classify + label +
+  comment steps — 10/10 assertions pass:**
+  - each of the 5 kinds (`feature`, `bug`, `task`, `requirement`, `user-story`)
+    → `kind=<k>` in the step output and `kind/<k>` + `priority/important-soon` +
+    `triage/accepted` in the applied labels, classify exit 0;
+  - helper failure (non-zero, no output file) → output `task`, applied
+    `kind/task`, `::warning::` emitted, classify exit 0 (job not failed);
+  - empty output file (helper exit 0) → output `task`, applied `kind/task`,
+    classify exit 0;
+  - the comment body states `Classified kind: bug` and still contains the DoR
+    checklist and the Do-NOT-PRs/push/merge line.
+
+## Commit + push record (dev only — NEVER main)
+
+- Message: `feat(triage): LLM-classify issue kind and apply kind/<kind> label (Phase 5b)`.
+- Files in this commit (ONLY these 2):
+  - `.github/workflows/agent-triage.yml`
+  - `.agents/orchestrator/STATE-MACHINE.md`
+- Push: `git push origin dev` (no `-i`, no `--force`, no `--no-verify`).
+- Commit SHA + push result: `a332da1` — `git push origin dev` OK
+  (`ec6a0ff..a332da1  dev -> dev`). This notes-record entry is a second,
+  notes-only commit recording the SHA (its own SHA is recorded post-push, not
+  invented here).
+
+## Open risks / follow-ups
+
+- **Live LLM unverified.** YAML parse + `bash -n` + structural checks + the
+  mocked flow prove syntax and control flow only. The real OpenRouter path has
+  not run; first live trial = an issue labelled `ai-triage` with a valid
+  `OPENCODE_API_KEY`, then confirm the comment's `Classified kind:` and the
+  applied `kind/<kind>` match the issue.
+- **Free-model misclassification.** The schema constrains shape, not judgment;
+  a wrong kind produces a wrong `kind/*` label (still green). A human can
+  re-apply `ai-triage` after editing, and a later run re-labels.
+- **A second `kind/*` is never removed.** Re-classifying an issue adds the new
+  `kind/<kind>` but does not remove a stale one from a previous run, so an issue
+  can accumulate more than one `kind/*` label. Triage runs are human-triggered
+  and rare; acceptable for v1.
+- **`gh issue view` failure is soft.** It is wrapped (`|| echo '{}'`), so a
+  transient read failure yields an empty title/body prompt and likely a
+  `kind/task` fallback rather than a hard failure — consistent with "triage must
+  stay green".
+- **`/tmp/triage_kind.json` is cleared before the call** (`rm -f`) so a stale
+  file from a prior run cannot be misread as a fresh classification.
+
 
