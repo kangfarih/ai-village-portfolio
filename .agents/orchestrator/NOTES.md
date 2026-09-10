@@ -337,8 +337,10 @@ section is the NOTES record.
   `.github/scripts/llm_json.sh`, `.github/labels.yml`,
   `.agents/orchestrator/STATE-MACHINE.md`, `.agents/orchestrator/NOTES.md`.
 - Push: `git push origin dev` (no `-i`, no `--force`, no `--no-verify`).
-- SHA + push result: recorded in the task report; a second notes-only commit is
-  allowed to record it (its own SHA recorded post-push, not invented here).
+- Fix commit: `417cbbe` — `git push origin dev` OK
+  (`9d387d2..417cbbe  dev -> dev`).
+- This notes-record entry: second notes-only commit (its own SHA recorded
+  post-push, not invented here).
 
 ## Open risks / follow-ups
 
