@@ -54,6 +54,13 @@ jobs:
       pull-requests: write
 
     steps:
+      # Set agent identity for all commits made by this workflow.
+      # Commits will show "opencode-agent" as author, but push still uses GITHUB_TOKEN.
+      - name: Configure git author identity
+        run: |
+          git config user.name "opencode-agent"
+          git config user.email "agent@users.noreply.github.com"
+
       # fetch-depth 0 + persist-credentials true: the agent must push the
       # session/* branch back, so a full clone with a pushing credential is
       # required (trial simplicity over a separate PAT step).

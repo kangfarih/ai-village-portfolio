@@ -223,3 +223,15 @@ No `gh-aw`/Copilot engine (needs paid Copilot); plain Actions +
 - Validation: ruby `YAML.load_file` all workflows + `labels.yml`,
   `json.load` `opencode.json`, `git status --short`, `git diff --stat`.
   No commit/push; `.agents/PLAN-01/NOTES.md` untouched (pre-existing dirty).
+
+## Commit author identity (this task, dev only — NEVER main)
+
+- All commits made by the opencode agent in `agent-build.yml` will now show:
+  - **Author name:** `opencode-agent`
+  - **Author email:** `agent@users.noreply.github.com`
+- Mechanism: `git config user.name "opencode-agent"` + `git config user.email "agent@users.noreply.github.com"`
+  is set in a step BEFORE the opencode action runs.
+- Result: `git log` shows commits as authored by `opencode-agent`, but the push still
+  uses `GITHUB_TOKEN` (authenticated as the user who triggered the workflow).
+- This is the per-commit author approach (via git config), not `--author` flag,
+  because the opencode agent runs its own `git commit` commands inside the prompt.
