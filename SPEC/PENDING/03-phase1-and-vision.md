@@ -1,9 +1,9 @@
 # PENDING 03 — Phase 1 + Vision Pointers (AWAITING ORDER)
 
 > Status: **AWAITING ORDER.** Summaries only — do not copy the full source files.
-> Read the originals for detail.
+> Originals (PHASE1_PLAN.md / PLANNING.md) are absent; this file is the archive.
 
-## `../../PHASE1_PLAN.md` — Phase 1, Weeks 1-2
+## `PHASE1_PLAN.md` — Phase 1, Weeks 1-2 (archived summary)
 
 - Scope: Core systems foundation (Save/Load via LocalStorage with versioning,
   Inventory/Stats framework Level/EXP/Gold/HP, quest skeleton + log stub); Soldier/Orc
@@ -11,7 +11,7 @@
   minimal UI polish (quest HUD, 2–3 new badges, transitions).
 - Source of asset terms: Zerie itch.io pack, personal/commercial use allowed, credit appreciated.
 
-## `../../PLANNING.md` — Full vision, 9 domains, 12-week roadmap
+## `PLANNING.md` — Full vision, 9 domains, 12-week roadmap (archived summary)
 
 - Scope: 9 domains — World/Map, NPC System, Interiors, Quest/Progression, Inventory/Stats,
   Save/Load, Mobile, Accessibility, Performance — in 6 phases (Core → World/NPCs →

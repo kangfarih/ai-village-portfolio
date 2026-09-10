@@ -1,7 +1,7 @@
 # IDEAS 00 — Parked Ideas (DO NOT EXECUTE without user order)
 
 > Explicitly NOT committed. Future possibilities only — no SPEC, no task, no branch
-> until the user orders it. Sources: `../../PLANNING.md`, `../../PHASE1_PLAN.md`.
+> until the user orders it. Sources: `../PENDING/03-phase1-and-vision.md` (archived summaries of PLANNING.md / PHASE1_PLAN.md).
 
 - Day/night cycle + NPC schedules (different locations/behaviors by time). — PLANNING §1–2.
 - Joystick / D-pad rewrite + touch gestures for inventory/quest menu. — PLANNING §7.
