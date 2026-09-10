@@ -9,7 +9,7 @@ permissions: {}
 # Human merge + /approve judgment stay human; this job only comments.
 on:
   issues:
-    types: [labeled]
+    types: [opened]
 
 jobs:
   triage:
