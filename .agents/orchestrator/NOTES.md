@@ -997,8 +997,9 @@ review/merge. Agents never merge and never push `dev`/`main`.
   - `.agents/orchestrator/STATE-MACHINE.md` (§10 appended)
   - `.agents/orchestrator/NOTES.md` (this section)
 - Push: `git push origin dev` (no `-i`, no `--force`, no `--no-verify`).
-- Commit SHA + push result: recorded in the follow-up notes-only commit (a SHA
-  cannot be recorded inside the commit it names).
+- Commit SHA + push result: `c806309` — `git push origin dev` OK
+  (`9479c31..c806309  dev -> dev`). This notes-record entry is a second,
+  notes-only commit (its own SHA is recorded post-push, not invented here).
 
 ## Open risks / follow-ups
 
