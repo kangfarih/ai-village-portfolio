@@ -1,14 +1,25 @@
 name: ci-smoke
 
+# Empty default: jobs declare their own least-privilege permissions below.
+permissions: {}
+
 # Minimal smoke checks for PRs targeting dev.
 # Stub by design: shell + github context only, no gh auth required.
 on:
   pull_request:
     branches: [dev]
 
+concurrency:
+  group: ci-smoke-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with:
