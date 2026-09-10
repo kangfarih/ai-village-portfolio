@@ -1683,4 +1683,185 @@ inlines no `curl`.
 - **`/tmp/triage_kind.json` is cleared before the call** (`rm -f`) so a stale
   file from a prior run cannot be misread as a fresh classification.
 
+---
 
+# Phase 5c — adversarial audit fixes (`dev` only — NEVER main)
+
+Blocking + Warning + Nitpick fixes from the Phase 5 adversarial audit. Most work
+is in `agent-orchestrate.yml`; the triage/review workflows and the state-machine
+contract are also updated. No push/PR/merge behavior is weakened: agents still
+never push `dev`/`main`, never force-push, and never merge.
+
+## What changed (ONLY these 5 paths; 4 in the fix commit, this NOTES record in the second)
+
+### Blocking
+
+- **B1 — exact ticket dedupe marker** (`.github/workflows/agent-orchestrate.yml`).
+  The ticket dedupe previously tested a bare substring `Origin: #<parent>`, so
+  parent `#1` was falsely satisfied by parent `#12`'s body (`Origin: #12`
+  contains `Origin: #1`) and tickets were silently dropped; a prompt-injected
+  `Origin: #N` line in a detail body could self-collide. The step now builds
+  `TICKET_MARKER="<!-- agent-ticket:v1 origin:#${ISSUE_NUMBER} -->"` and tests
+  `.body | contains($TICKET_MARKER)` — the exact delimited marker the workflow
+  writes, including the ` -->` terminator — keeping the exact-title check. Ticket
+  bodies still contain that exact marker (now emitted first).
+- **B2 — docs-only completion guard** (`.github/workflows/agent-orchestrate.yml`).
+  When `CODE_COUNT == 0` the orchestrator unconditionally posted
+  `<!-- parent-done:v1 -->` + `status:done`. `CODE_COUNT` reflects only the
+  current run's `goals.json`, so a re-run (or manually-created children) could
+  mark a mixed parent done while an `ai-goal` child was still building, making
+  `agent-review` skip its whole termination block (incl. `gh pr create`) and
+  strand the integration branch. Before marking done, the step now lists this
+  parent's `ai-goal` children and computes `UNFINISHED` (title ends exactly with
+  `(from #<parent>)`, null-guarded via `(.title // "")`, and no `goal/done`
+  label). If non-zero it logs an `::notice::` and does **not** post the marker or
+  add `status:done`, leaving termination to `agent-review`. The parent-marker
+  idempotency check is retained inside the allow path.
+
+### Warnings
+
+- **W1 — orchestrator token budget.** The `llm_json.sh` call now passes
+  `--max-tokens "${ORCHESTRATOR_MAX_TOKENS:-8000}"` (was the 1500 default, too
+  small for full-markdown details across up to 6 goals).
+- **W2 — trusted metadata before untrusted LLM detail.** Code-goal bodies now
+  emit `Kind:`/`Integration branch:`/`Parent:`/`Acceptance:` FIRST, then the
+  detail; ticket bodies emit the exact marker + `Origin:` + `Kind:` first, then
+  the heading and detail. The model `detail` is passed through
+  `strip_trusted_lines` (`grep -v -E '^(Parent:|Origin:|Kind:|Integration
+  branch:|<!--)'`) before embedding, so a prompt-injected metadata line cannot
+  shadow the trusted one (`agent-programmer.yml` extracts `Parent:` with
+  `sed … | head -n1`, and the trusted line is now first anyway).
+- **W3 — untrusted titles/details neutralized.** `sanitize_title` collapses
+  newlines/tabs, squeezes whitespace, and caps the title at 120 characters
+  before `gh issue create`; `neutralize_mentions` inserts a zero-width space
+  after every `@` (`sed 's/@/@\xE2\x80\x8B/g'`, U+200B) in the title and detail
+  so model text cannot emit live GitHub mentions.
+- **W4 — same-run duplicate titles deduped.** Immediately after `goals.json`
+  passes the contract guard and before `COUNT`/`CODE_COUNT` are computed, the
+  step runs `jq 'unique_by([.kind,.title])' goals.json > /tmp/goals.dedup.json
+  && mv … goals.json`, then recomputes counts. `RAW_COUNT` (pre-dedupe length) is
+  captured for N1.
+- **W5 — loud ticket-list validation.** After fetching `EXISTING_TICKETS_JSON`,
+  a plain `printf '%s' "$EXISTING_TICKETS_JSON" | jq -e 'type=="array"'
+  >/dev/null` runs so a garbled/empty body trips the `ERR` trap; the dedupe
+  `jq` no longer uses `2>&1` (the `>/dev/null` is kept because `jq -e`'s
+  false-result exit status is the branch condition).
+- **W6 — triage clears stale `kind/*`** (`.github/workflows/agent-triage.yml`).
+  Before adding `kind/${KIND}` the step loops
+  `for k in feature bug task requirement user-story` and runs
+  `gh issue edit "$ISSUE_NUMBER" --remove-label "kind/$k" 2>/dev/null || true`,
+  so a re-classification replaces the prior kind instead of accumulating. All
+  five self-heal `gh label create` lines are kept.
+- **W7 — review is code-only** (`.github/workflows/agent-review.yml`). The
+  system prompt now says only `kind: code` goals reach review (non-dev kinds are
+  `ai-ticket` issues and never enter the loop), and a defensive guard after the
+  `tl:v1` schema check escalates a non-code `kind` to a loud comment +
+  `needs-human` + `exit 1` before any LLM call (symmetric with the Programmer's
+  guard). The `TL_SCHEMA` enum is deliberately left as-is so the guard produces
+  the specific message.
+- **W8 — STATE-MACHINE `kind/*` contradiction resolved**
+  (`.agents/orchestrator/STATE-MACHINE.md`). The old "triage-owned, the goal loop
+  never sets a `kind/*`" wording now states: goal **issues** never carry
+  `kind/*`; orchestrator-emitted `ai-ticket` issues carry
+  `{docs, analysis, requirement, user-story}`; triage-classified issues carry
+  `{feature, bug, task, requirement, user-story}`. §11 documents W3 sanitizing,
+  W2 trusted-first bodies, B1 exact-marker dedupe, W4 goal dedupe, and the B2
+  guard; the triage section notes the enum intentionally omits `docs`/`analysis`
+  and that re-classification replaces the prior `kind/*`.
+
+### Nitpick
+
+- **N1 — >6 proposals surfaced.** When the pre-dedupe array length exceeds 6 the
+  step logs `::notice::…` and adds a note to the summary comment (in addition to
+  the existing `[:6]` cap), so a dropped 7th goal is visible.
+
+## Verification (actual output)
+
+- `ruby -ryaml -e "YAML.load_file('<f>')"` → `YAML OK` for
+  `agent-orchestrate.yml`, `agent-triage.yml`, `agent-review.yml`.
+- All `run:` blocks extracted via Ruby YAML and `bash -n` each →
+  `bash -n OK` for all 6 (orchestrate) + 4 (triage) + 4 (review) = 14.
+  (`shellcheck` not installed on the host.)
+- **Unit (`jq`/bash) — 19/19 + 1 corrected cap check pass:**
+  - **B1:** own marker `<!-- agent-ticket:v1 origin:#1 -->` matches `true`;
+    parent `#12`'s body matches `false` (while the old `Origin: #1` substring
+    would have matched `true` — reproduced for contrast); a body carrying only
+    an injected `Origin: #1` (no marker) matches `false`.
+  - **B2:** all-done children → `UNFINISHED=0` (allow); one `goal/building`
+    child → `1` (block); no children → `0`; another parent's `(from #77)` child
+    → `0`; a `null` title does not crash (null guard).
+  - **W4:** `unique_by([.kind,.title])` reduces 4 items (2× code/A, docs/A,
+    code/B) to 3 and keeps `docs/A` alongside `code/A`.
+  - **W3:** `  hello\nworld\t  foo   bar  ` → `hello world foo bar`; a 200-char
+    title caps at 120 chars after assignment; `@alice`/`@bob` produce the
+    `40 e2 80 8b` byte sequence after each `@` (two `@` glyphs kept);
+    `strip_trusted_lines` drops `Parent:`/`Kind:`/`Origin:`/`<!--` lines and
+    keeps `normal line`.
+  - **W6:** the removal loop and the exact `--remove-label "kind/$k"` line are
+    present; the non-current set for `kind=bug` is
+    `feature task requirement user-story`.
+- **Mock `gh` + the extracted on-disk delegate step — 19/19 assertions pass:**
+  - A (docs-only, duplicate title + injected `Parent: #999`/`Origin: #1`/`Kind:`
+    /`<!-- evil -->` + `@alice`): exactly **1** create (W4); body begins with
+    the exact marker then trusted `Origin: #1` and `Kind: requirement`; injected
+    `Parent:`/the detail's `Origin:`/`<!-- evil -->` are gone; ZWSP byte present
+    and literal `@alice` absent; `parent-done:v1` + `status:done` +
+    `triage/accepted` applied.
+  - B (docs-only + one `goal/building` child): 1 ticket still created, **no**
+    `parent-done:v1`, **no** `status:done`, notice logged (B2).
+  - B2 (all children `goal/done`): `parent-done:v1` posted (allow).
+  - C (B1): body with `<!-- agent-ticket:v1 origin:#12 -->` does **not** block
+    parent `#1` → ticket created.
+  - D (B1): body with the exact `origin:#1` marker → skipped, no create.
+  - E (W5): `tickets_list.json` = `NOT JSON {{{` → `ERR` trap, one
+    `orchestrator:v1-error` comment, 0 creates, exit 5.
+- **W7 mock (extracted review step, mock `gh` + sentinel `llm_json.sh`):** a
+  `tl:v1` payload with `kind: docs` → `::error::tl:v1 kind is not code (docs)`,
+  loud comment, `--remove-label goal/review --add-label needs-human`, exit 1,
+  **no** LLM call. With `kind: code` the guard does **not** fire (proceeds to
+  the next check). Prompt grep: the code-only wording is present and the old
+  "deliver a markdown artifact on the integration branch" wording is gone.
+- `git status --short` / `git diff --stat` touch only the 5 allowed paths.
+
+## Commit + push record (dev only — NEVER main)
+
+- Message: `fix(agents): Phase 5 audit fixes — exact ticket dedupe, docs-only
+  child guard, trusted-first bodies, triage kind reset, review code guard`.
+- Fix commit `b2dc203` — `git push origin dev` OK
+  (`fa0ef2f..b2dc203  dev -> dev`). Files in the fix commit (4):
+  `.github/workflows/agent-orchestrate.yml`,
+  `.github/workflows/agent-triage.yml`, `.github/workflows/agent-review.yml`,
+  `.agents/orchestrator/STATE-MACHINE.md`.
+- This notes-record entry is a second, notes-only commit recording the SHA
+  (its own SHA is recorded post-push, not invented here). Total diff for the
+  round is the 5 paths listed above.
+
+## Open risks / follow-ups
+
+- **Live runner unverified.** YAML/`bash -n`/`jq` unit tests + mocked
+  `gh`/delegate/review flows prove syntax and control flow only. The real
+  Actions runner, the OpenRouter path, and real `gh issue
+  list/create/comment/edit` behaviour have not run.
+- **Title sanitizing changes the dedupe key.** `sanitize_title` +
+  `neutralize_mentions` are applied before the title is used for both dedupe and
+  creation, so re-runs are self-consistent. A goal/ticket created before Phase 5c
+  whose model title contained unusual whitespace or an `@` may not match the new
+  sanitized title and could be recreated once; the `Origin:`/`endswith` scoping
+  still prevents cross-parent collisions.
+- **W4 `unique_by` sorts.** `jq unique_by` orders by `[kind,title]`, so the
+  "first 6" kept after dedupe are no longer in the LLM's original order. Bounded
+  and visible via N1; acceptable for v1.
+- **W2 strips legitimate-looking detail lines.** A detail line that legitimately
+  starts with `Kind:`/`Parent:`/`Origin:`/`Integration branch:` or `<!--` is
+  dropped. That is the intended anti-shadowing trade-off; the marker/heading and
+  trusted lines are preserved.
+- **`sed` `\xHH` escape is GNU-oriented.** `sed 's/@/@\xE2\x80\x8B/g'` was
+  verified to emit the U+200B bytes on the host `sed` as well as GNU sed on
+  `ubuntu-latest`; if a future runner used a POSIX-only `sed` it should be
+  replaced with a `printf`-built ZWSP.
+- **B2 relies on the list API.** A `gh issue list --label ai-goal` transport
+  failure trips the `ERR` trap (loud), never a silent "no children"; the
+  `agent-orchestrate-<n>` concurrency group serializes runs.
+- **W7 leaves `TL_SCHEMA` permissive.** A non-code `tl:v1` is caught by the guard
+  (friendly message) rather than by the schema; intentionally unchanged so the
+  failure names the kind.
