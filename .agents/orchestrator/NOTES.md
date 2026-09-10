@@ -1286,8 +1286,10 @@ behavior is weakened: agents still never push `dev`/`main` and never merge.
   - `.agents/orchestrator/STATE-MACHINE.md`
   - `.agents/orchestrator/NOTES.md` (this section)
 - Push: `git push origin dev` (no `-i`, no `--force`, no `--no-verify`).
-- Commit SHA + push result: recorded in the follow-up notes commit (its own SHA
-  recorded post-push, not invented here).
+- Fix commit: `05593d7` — `git push origin dev` OK
+  (`462ef59..05593d7  dev -> dev`).
+- This notes-record entry: second, notes-only commit (its own SHA recorded
+  post-push, not invented here).
 
 ## Open risks / follow-ups
 
