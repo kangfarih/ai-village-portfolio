@@ -9,7 +9,7 @@ permissions: {}
 # Human merge + /approve judgment stay human; this job only comments.
 on:
   issues:
-    types: [opened]
+    types: [labeled]
 
 jobs:
   triage:
@@ -45,6 +45,7 @@ jobs:
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           echo "Applying labels to issue #${ISSUE_NUMBER}: ${ISSUE_TITLE}"
           gh issue edit "${ISSUE_NUMBER}" --add-label "priority/important-soon,kind/task,triage/accepted"
@@ -53,7 +54,7 @@ jobs:
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           echo "Posting triage comment for issue #${ISSUE_NUMBER}: ${ISSUE_TITLE}"
           SUMMARY="This issue requires triage and prioritization. It has been labeled accordingly and is ready for review. The description outlines the problem clearly, and the criteria for resolution are specified. Dependencies and reproducibility need verification before proceeding."
