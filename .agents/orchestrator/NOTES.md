@@ -220,8 +220,9 @@ refactor, so later role workflows share one contract.
   - `.github/workflows/agent-orchestrate.yml` (refactor)
   - `.agents/orchestrator/NOTES.md` (this file)
 - Push: `git push origin dev` (no `-i`, no `--force`, no `--no-verify`).
-- SHA + push result: recorded in the notes-only commit below (SHA is unknowable
-  before the commit, so it is not invented here).
+- SHA + push result: `f0f9e86` — `git push origin dev` OK
+  (`bca8c83..f0f9e86  dev -> dev`). This notes-record entry is a second
+  notes-only commit (its own SHA is recorded post-push, not invented here).
 
 ## Open risks / follow-ups
 
