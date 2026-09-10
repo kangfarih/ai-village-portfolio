@@ -16,7 +16,7 @@
 |---|---|---|---|---|
 | **PO** | `agent-orchestrate`, `agent-review` | `ai-orchestrate`; PO verdict pass on `goal/review` | **high** | `thinkingmachines/inkling:free` |
 | **TL** | `agent-techlead` | `goal/tl` | **medium** | `thinkingmachines/inkling:free` |
-| **Programmer** | `agent-programmer` | `goal/ready` | **medium** for code, **low** for docs/analysis | `thinkingmachines/inkling:free` |
+| **Programmer** | `agent-programmer` | `goal/ready` | **medium** for `kind: code`, **low** for non-development kinds (`docs`/`analysis`/`requirement`/`user-story`) | `thinkingmachines/inkling:free` |
 
 Rules:
 
@@ -78,6 +78,10 @@ The orchestrator creates sub-issues titled `[GOAL] <title> (from #<parent>)`:
 
 - **Labels applied:** `ai-goal` **and** `goal/tl`. `ai-goal` is the
   orchestrator's bookkeeping label; `goal/tl` hands the goal to the TL workflow.
+- **Kind:** each goal carries a `kind` in its body (`Kind: <kind>`) and in the
+  `tl:v1` spec, one of `code | docs | analysis | requirement | user-story`.
+  `code` changes repository source/config/files; every other kind is
+  **non-development** and produces a markdown artifact (§9).
 - **Cap 6 goals** per parent (the LLM is asked for 3–6; the loop slices `[:6]`).
 - **Per-title dedupe:** before creating, the PO lists existing `ai-goal` issues
   whose title contains `from #<parent>` and skips any whose expected title is
@@ -346,10 +350,11 @@ integration PR.
 
 - Cut from a **fresh `origin/dev`** by the PO (`agent-orchestrate`), once per
   parent issue, before any goal is created.
-- Creation is idempotent: if `refs/heads/issue/<parent#>` already exists on
-  `origin`, the orchestrator skips creation. It never `--force`s.
-- Creation runs under the delegation step's `ERR` trap, so a failure posts the
-  loud `<!-- orchestrator:v1-error -->` parent comment and exits non-zero.
+- The Programmer treats existence as a fallback: it runs
+  `git fetch --no-tags origin dev` and, if
+  `git ls-remote --exit-code --heads origin "refs/heads/issue/<parent#>"`
+  fails, creates the branch from `origin/dev` and pushes it. This is
+  idempotent and never `--force`s.
 - Every goal's work lands here (directly or by merge); the branch is the single
   integration point for the parent.
 
@@ -357,42 +362,71 @@ integration PR.
 
 - Cut by the **Programmer** from the goal's integration branch
   `issue/<parent#>` when the goal is `goal/ready`.
-- The Programmer commits the goal's files to `task/<goal#>`, then auto-merges
-  `task/<goal#>` into `issue/<parent#>` with `--no-ff` and pushes the
-  integration branch. The goal's PR/merge target is the integration branch, not
-  `dev`.
-- **Contract only in Phase 4a:** the Programmer branch/merge implementation
-  lands in **Phase 4b**. This section is the frozen interface it must satisfy;
-  Phase 4a ships the orchestrator half (integration branch + `kind`) only.
+- The Programmer writes the changeset's real files, commits them
+  (`feat(goal-#N)` for `kind: code`, else `docs(goal-#N)`), pushes
+  `task/<goal#>`, then auto-merges it into `issue/<parent#>` with
+  `git merge --no-ff` and pushes the integration branch. The goal's merge
+  target is the integration branch, not `dev`.
+- **Stale branch handling:** before cutting `task/<goal#>`, the Programmer
+  deletes the local and remote task branch
+  (`git branch -D task/<goal#>` / `git push origin --delete task/<goal#>`) and
+  recreates it from the integration branch. This means a re-run never needs a
+  force-push, and only the agent-owned `task/<goal#>` is ever deleted.
+- **Loud failures:** a merge conflict aborts the merge
+  (`git merge --abort`) and leaves `issue/<parent#>` unchanged; an empty
+  changeset (`git diff --cached --quiet`) or a conflict posts a loud comment,
+  moves the goal to `needs-human`, and exits non-zero.
+
+### Safety guards (before writing anything)
+
+Before any file is written, the Programmer rejects the WHOLE changeset (loud
+comment + `needs-human` + `exit 1`) if ANY file:
+
+- has an empty path, an absolute path (`/…`), or a `..` path segment;
+- targets `.git/**`;
+- targets `.github/workflows/**` (privilege-escalation guard);
+- or the changeset exceeds **25 files** or **200000 total content bytes**.
+
+No file is ever silently dropped.
+
+### Programmer result payload
+
+The `<!-- result:v1 -->` payload carries `attempt`, `summary`, `kind`, `files`
+(repo-relative **paths only**, never contents), `changes`, `evidence`, `commit`
+(task-branch SHA), `merge_commit` (integration-branch SHA), `task_branch`,
+`integration_branch`, `needs_human`, and `needs_human_reason`. A
+`needs_human:true` result moves the goal to `needs-human` (no `goal/review`);
+otherwise the goal moves to `goal/review`.
 
 ### Non-development goals
 
 Goals whose `kind` is `docs`, `analysis`, `requirement`, or `user-story` are
-non-development. They produce a **markdown artifact** committed to
+non-development. The Programmer ignores the model's path and collapses the
+changeset to exactly one markdown artifact committed to
 
 ```
 .agents/issue-<parent#>/goal-<goal#>.md
 ```
 
-on the integration branch `issue/<parent#>`, and change **no source code**.
-`kind: code` is the only kind that alters repository source/config/files.
+on the integration branch `issue/<parent#>`. `kind: code` is the only kind that
+alters repository source/config/files.
 
 ### Final integration PR
 
 When **every** child goal of a parent is `goal/done` (§3/§7), the review role
-opens **ONE** pull request `issue/<parent#>` → `dev` for human review and merge.
-The agent **never** merges that PR and **never** pushes `dev` or `main`; the
-human is the only actor who merges.
+opens **ONE** pull request `issue/<parent#>` → `dev` for human review and merge
+(Phase 4b-2). The agent **never** merges that PR and **never** pushes `dev` or
+`main`; the human is the only actor who merges.
 
 ### Hard rules
 
 - **No workflow edits by agents.** Agents must not modify
-  `.github/workflows/**` (privilege-escalation guard). This is enforced by the
-  Programmer in Phase 4b.
+  `.github/workflows/**` (privilege-escalation guard). Enforced by the
+  Programmer's changeset path guard.
 - **No `dev`/`main` pushes, no force-push.** The only branches an agent may
   push are `issue/<parent#>` and `task/<goal#>`.
 - **Permission note.** Branch creation and merge require job
-  `permissions: contents: write` (the orchestrator adds it in Phase 4a; the
-  Programmer needs it in Phase 4b). Opening the final PR requires
-  `pull-requests: write` for the review role. `issues: write` remains for labels
-  and comments, and `actions: write` for `workflow_dispatch` chaining (§8).
+  `permissions: contents: write` (the orchestrator and the Programmer both
+  declare it). Opening the final PR requires `pull-requests: write` for the
+  review role. `issues: write` remains for labels and comments, and
+  `actions: write` for `workflow_dispatch` chaining (§8).

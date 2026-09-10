@@ -709,3 +709,178 @@ merge implementation is Phase 4b. All model traffic still goes through
   comment + non-zero exit, but does not specifically name the branch step.
 - `contents: write` widens the orchestrator's token scope; branch creation is
   the only write path and it never targets `dev`/`main` (structurally asserted).
+
+---
+
+# Phase 4b-1 — Programmer writes real files + task-branch auto-merge (`dev` only — NEVER main)
+
+Second branch-model slice: the Programmer now writes the LLM changeset's real
+files to a per-goal `task/<goal#>` branch and auto-merges (`--no-ff`) into the
+per-parent `issue/<parent#>` integration branch. Agents never push `dev`/`main`
+and never force-push; the final `issue/<parent#>` → `dev` PR is Phase 4b-2.
+`.github/scripts/llm_json.sh` is unchanged.
+
+## What changed (ONLY these 4 files)
+
+- `.github/workflows/agent-programmer.yml` (main work)
+  - **Permissions/checkout:** job `permissions` gained `contents: write`
+    (`issues: write` + `actions: write` kept; top-level stays `permissions: {}`);
+    checkout is now `fetch-depth: 0` + `persist-credentials: true`; added a
+    `Configure git author identity` step (`github-workflow-agent` /
+    `agent@users.noreply.github.com`).
+  - **Variables:** parses `Parent: #N` from the goal body (missing/invalid →
+    loud comment + `needs-human` + exit 1, **before** any branch work); derives
+    `INTEGRATION=issue/<parent#>` and `TASK=task/<goal#>`; reads the latest
+    `tl:v1` via §6 for `objective/steps/files/acceptance/kind`; sets
+    `NONDEV=(kind != "code")`.
+  - **LLM changeset call:** one `llm_json.sh` call, effort `medium` for
+    `kind: code` else `low`. New schema (re-checked with `jq -e` before use):
+    object with non-empty string `summary`, array `files` of
+    `{path:string(nonempty), content:string}`, array of string `changes`, string
+    `evidence`, boolean `needs_human`, string `needs_human_reason`. System
+    prompt is kind-aware (code → real files with full contents; non-dev → one
+    markdown document) and embeds the goal + parent context. Output is written
+    to `/tmp/programmer_changeset.json` (NOT the repo root, so it can never be
+    staged by `git add -A`).
+  - **Non-dev canonical path:** when `NONDEV`, the model's path is ignored and
+    the changeset is collapsed to exactly one file
+    `.agents/issue-<parent#>/goal-<goal#>.md`, content = `files[0].content`
+    (fallback: `summary`).
+  - **Safety guards (before writing):** rejects the whole changeset (loud +
+    `needs-human` + exit 1) on any empty/absolute/`..`-segment path, any
+    `.git/**`, any `.github/workflows/**`, > 25 files, or > 200000 content
+    bytes; no file is silently dropped. Portable `case` loop (bash 3.2-safe).
+  - **Git flow (never `dev`/`main`, no force):** `git fetch --no-tags origin
+    dev`; if `issue/<parent#>` is absent on origin it is created locally from
+    `origin/dev` (the final push publishes it), otherwise fetched and checked
+    out; stale `task/<goal#>` deleted local + remote (`git branch -D` /
+    `git push origin --delete`); `task/<goal#>` cut from the integration branch;
+    files written; `git add -A`; empty staging → loud + `needs-human`; commit
+    `feat(goal-#N):` / `docs(goal-#N):` (subject truncated to 72 chars);
+    `git push -u origin task/<goal#>`; checkout integration;
+    `git merge --no-ff task/<goal#> -m "merge(...) : ..."`; a conflict does
+    `git merge --abort`, loud + `needs-human` + exit 1; `git push origin
+    issue/<parent#>`; captures `TASK_SHA`, `MERGE_SHA`, and `git diff --stat`.
+    Exactly one content push per branch (plus the mandated task-branch delete).
+  - **`result:v1` payload:** `attempt, summary, kind, files:[paths only],
+    changes, evidence, commit, merge_commit, task_branch, integration_branch,
+    needs_human, needs_human_reason`, posted with the §6 envelope + readable
+    markdown (branches/SHAs/files/diff stat). `needs_human:true` → `needs-human`
+    label + loud comment + no `goal/review`; else `goal/review`, then the
+    existing dispatch of `agent-review.yml`. The `ERR` trap posts a loud comment
+    + `needs-human` and exits 1, and never re-adds `goal/ready`.
+  - Idempotency: a `result:v1` for the current attempt carrying `task_branch`
+    short-circuits the LLM + git and only re-applies the transition (an older
+    text-only `result:v1` is ignored and re-processed).
+- `.github/workflows/agent-techlead.yml` (small): the `kind` enum in BOTH the
+  system prompt and the `--schema` widened from `code|docs|analysis` to
+  `code|docs|analysis|requirement|user-story`; everything else unchanged.
+- `.agents/orchestrator/STATE-MACHINE.md`: §1 effort row updated for the
+  non-dev kinds; §2 gained a `Kind:` bullet; §9 rewritten to match the
+  implementation exactly (`issue/<parent#>` integration branch incl. the
+  Programmer fallback, `task/<goal#>` cut/commit/push/`--no-ff` auto-merge,
+  stale task delete+recreate with no force-push, the path/`.git/`/
+  `.github/workflows/**`/25-file/200000-byte guards, the non-dev canonical path,
+  the `result:v1` fields, conflict/nothing-to-commit → `needs-human`, the single
+  `issue/<N>` → `dev` PR in Phase 4b-2, and the hard rule that agents NEVER
+  push/merge `dev`/`main`).
+- `.agents/orchestrator/NOTES.md` (this section).
+
+## Verification (actual output)
+
+- `ruby -ryaml -e "YAML.load_file(...)"` → `YAML OK` for both workflows.
+- Extracted all 9 `run:` blocks (Ruby YAML) and `bash -n` each → `bash -n OK`
+  for all 9. (`shellcheck` not installed on the host.)
+- Structural assertions (Ruby YAML): job permissions
+  `{"contents"=>"write","issues"=>"write","actions"=>"write"}`, top-level `{}`;
+  checkout `fetch-depth==0`, `persist-credentials==true`; git identity present;
+  `.github/workflows/*)` and `.git/*)` guard arms present; canonical
+  `.agents/issue-${PARENT}/goal-${ISSUE_NUMBER}.md` present; `git ls-remote
+  --exit-code --heads origin "refs/heads/${INTEGRATION}"` present;
+  `git merge --no-ff` / `git merge --abort` / stale-delete present;
+  `gh workflow run agent-review.yml` present; no `--add-label goal/ready`.
+- `git push` audit: `git push -u origin "${TASK}"` (1), `git push origin
+  --delete "${TASK}"` (1, mandated stale-branch delete), `git push origin
+  "${INTEGRATION}"` (1); **0** pushes targeting `dev`/`main`; **0** literal
+  `--force`.
+- Changeset schema equality: on-disk `CHANGESET_SCHEMA` byte-identical to the
+  tested filter → `CHANGESET SCHEMA IDENTICAL: true`.
+- `jq -e` schema tests (15/15): accepts a valid changeset and an empty-`files`
+  changeset; rejects missing/empty `summary`, non-array `files`, file missing
+  `path`/`content`, empty `path`, non-string `content`, non-string `changes`
+  element, non-string `evidence`, non-bool `needs_human`, missing
+  `needs_human_reason`, an array, and `{}`.
+- TL schema tests: accepts `code/docs/analysis/requirement/user-story`, rejects
+  `bogus` and `CODE`.
+- **Mock end-to-end (72/72 assertions)**: extracted Programmer step run against
+  a throwaway local git repo + bare `origin`, with mock `gh`, a `git` conflict
+  shim, and mock `llm_json.sh` (`${{ github.repository }}` substituted as
+  GitHub would):
+  - (a) `kind: code` happy path → `task/101` pushed, `issue/55` merge
+    `--no-ff`, `feat(goal-#101)` commit, file on `issue/55`, `result:v1` with
+    paths-only `files`, `commit`/`merge_commit` set, `goal/review`, effort
+    `medium`, no `changeset.json` committed, then the dispatch step verifies it
+    ran `agent-review.yml` with `issue_number=101`;
+  - (b) `kind: docs` → exactly `.agents/issue-55/goal-101.md`, model path
+    ignored, effort `low`;
+  - (b2) non-dev with empty `files` → canonical content falls back to
+    `summary`;
+  - (c) path guards reject `../evil`, `/etc/passwd`, `.github/workflows/ci.yml`
+    (needs-human, no task branch, no `goal/review`);
+  - (d) merge conflict → `needs-human`, no `goal/review`, task branch still
+    pushed;
+  - (e) empty changeset → `needs-human`;
+  - (f) missing `Parent:` → `needs-human`, no task/integration branch;
+  - (g) missing integration branch → fallback creates/publishes `issue/55` with
+    the merge;
+  - (h) model `needs_human:true` → result posted, `needs-human`, no branch, no
+    `goal/review`;
+  - (i) re-run with an existing `result:v1` for the attempt → no second LLM
+    call, single result comment, `goal/review`.
+- `git status --short` shows exactly the 4 intended files.
+
+## Commit + push record (dev only — NEVER main)
+
+- Message: `feat(programmer): real file changesets on task/<goal#> auto-merged into issue/<parent#> (Phase 4b-1)`.
+- Files in this commit (ONLY these 4):
+  - `.github/workflows/agent-programmer.yml`
+  - `.github/workflows/agent-techlead.yml`
+  - `.agents/orchestrator/STATE-MACHINE.md`
+  - `.agents/orchestrator/NOTES.md` (this section)
+- Push: `git push origin dev` (no `-i`, no `--force`/forced update, no
+  `--no-verify`).
+- Commit SHA + push result: see the task report / the following notes-only
+  commit (SHA unknowable before commit, so recorded there, not invented here).
+
+## Open risks / follow-ups
+
+- **`agent-review` is now schema-incompatible until Phase 4b-2.** `agent-review`
+  still validates `tl:v1` `kind` as `code|docs|analysis` only and its
+  `RESULT_SCHEMA` requires the old text-only `deliverable:string` +
+  `evidence:[string]`. A goal reaching `goal/review` after this change will be
+  rejected → `needs-human`. Phase 4b-2 must widen the review's TL schema,
+  accept the new `result:v1` shape, and open the single
+  `issue/<N>` → `dev` PR (`pull-requests: write`). Also
+  `.github/workflows/agent-review.yml`'s copy of the TL `kind` enum is not in
+  this task's 4-file scope.
+- **Live git/gh unverified.** The mock proves control flow and the local git
+  merge semantics; the real Actions runner, `GITHUB_TOKEN` push permissions,
+  branch protections, and the integration-branch interaction with the
+  orchestrator have not run. First trial = a goal at `goal/ready` with a valid
+  `OPENCODE_API_KEY`, then confirm `task/<goal#>` + the `--no-ff` merge on
+  `issue/<parent#>`.
+- **Non-text files unsupported.** File contents are JSON strings written via
+  `jq -r`; binary is out of scope for v1.
+- **Idempotency keys on `task_branch`.** A pre-Phase-4b-1 `result:v1` (no
+  `task_branch`) is ignored and the new git flow re-runs; a genuine 4b-1 result
+  short-circuits. Repeated dispatches are otherwise safe (stale task branch is
+  deleted and recreated, never force-pushed).
+- **Commit subject `cut -c1-72`** counts characters, not bytes; a very long
+  multi-byte summary could make the subject slightly longer in bytes. Cosmetic.
+- **`git fetch --no-tags origin "${INTEGRATION}"`** assumes the integration
+  branch is fetchable once present; a transient fetch failure trips the `ERR`
+  trap (loud + `needs-human`), not a silent skip.
+- **No `agent-build`/`/approve` path change.** The old human-gated
+  `agent-build` workflow still exists; this task replaces the Programmer's
+  text-only deliverable with committed branch work, so the `/approve` gate is
+  now orthogonal to the loop (worth reconciling in a later phase).
