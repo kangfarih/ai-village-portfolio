@@ -202,12 +202,17 @@ jobs:
             FINDINGS="$(jq -r '.findings' /tmp/tl_research.json)"
             RECOMMENDATIONS="$(jq -r '.recommendations' /tmp/tl_research.json)"
             {
-              printf '<!-- bot -->\n'
-              printf '## Research Findings\n\n'
-              printf '%s\n\n' "$FINDINGS"
-              printf '## Recommendations\n\n'
-              printf '%s\n\n' "$RECOMMENDATIONS"
-              printf '---\nAgent: tech-lead (research mode) | LLM: multi-provider chain (llm_json.sh)\n'
+              echo '<!-- bot -->'
+              echo '## Research Findings'
+              echo ''
+              printf '%s' "$FINDINGS"
+              echo ''
+              echo '## Recommendations'
+              echo ''
+              printf '%s' "$RECOMMENDATIONS"
+              echo ''
+              echo '---'
+              echo 'Agent: tech-lead (research mode) | LLM: multi-provider chain (llm_json.sh)'
             } > /tmp/tl_research_comment.md
             gh issue comment "$ISSUE_NUMBER" --body-file /tmp/tl_research_comment.md
           else
