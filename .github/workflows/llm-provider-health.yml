@@ -1,0 +1,127 @@
+name: LLM Provider Health Check
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'  # Every 6 hours
+
+permissions: {}
+
+jobs:
+  test-provider:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [openrouter, gemini, groq, cline, ollama]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test ${{ matrix.provider }}
+        id: test
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CLINE_API_KEY: ${{ secrets.CLINE_API_KEY }}
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          PROVIDER: ${{ matrix.provider }}
+        run: |
+          set -euo pipefail
+
+          PROVIDER="$PROVIDER"
+          echo "🧪 Testing provider: ${PROVIDER}"
+
+          # Get endpoint from llm_json.sh provider specs
+          case "$PROVIDER" in
+            openrouter)
+              ENDPOINT="${OPENROUTER_ENDPOINT:-https://openrouter.ai/api/v1/chat/completions}"
+              MODELS="${OPENROUTER_MODELS:-nex-agi/nex-n2.5-mini:free}"
+              ;;
+            gemini)
+              ENDPOINT="${GEMINI_ENDPOINT:-https://generativelanguage.googleapis.com/v1beta/openai/chat/completions}"
+              MODELS="${GEMINI_MODELS:-gemini-3.5-flash-lite}"
+              ;;
+            groq)
+              ENDPOINT="${GROQ_ENDPOINT:-https://api.groq.com/openai/v1/chat/completions}"
+              MODELS="${GROQ_MODELS:-openai/gpt-oss-20b}"
+              ;;
+            cline)
+              ENDPOINT="${CLINE_ENDPOINT:-https://api.cline.bot/api/v1/chat/completions}"
+              MODELS="${CLINE_MODELS:-openrouter/free}"
+              ;;
+            ollama)
+              ENDPOINT="${OLLAMA_ENDPOINT:-https://ollama.com/v1/chat/completions}"
+              MODELS="${OLLAMA_MODELS:-gpt-oss:20b}"
+              ;;
+          esac
+
+          echo "   Endpoint: ${ENDPOINT}"
+          echo "   Models: ${MODELS}"
+
+          # Create test prompt files
+          cat > /tmp/health_system.txt <<'EOF'
+          You are a health check endpoint. Reply with ONLY valid JSON.
+          EOF
+
+          cat > /tmp/health_user.txt <<'EOF'
+          Reply with JSON: {"status": "ok", "timestamp": "now"}
+          EOF
+
+          # Run llm_json.sh with this provider only
+          export LLM_PROVIDER_ORDER="$PROVIDER"
+          START_TIME=$(date +%s)
+
+          if bash .github/scripts/llm_json.sh \
+              --system-file /tmp/health_system.txt \
+              --user-file /tmp/health_user.txt \
+              --out /tmp/health_response.json \
+              --schema 'type=="object" and (.status=="ok")' \
+              --effort low \
+              --max-tokens 50; then
+            END_TIME=$(date +%s)
+            DURATION=$((END_TIME - START_TIME))
+            echo "✅ Provider ${PROVIDER} is AVAILABLE"
+            echo "   Response time: ${DURATION}s"
+            echo "   Schema validation: passed"
+          else
+            echo "❌ Provider ${PROVIDER} is UNAVAILABLE"
+            exit 1
+          fi
+
+  summary:
+    runs-on: ubuntu-latest
+    needs: test-provider
+    if: always()
+    permissions:
+      actions: read
+
+    steps:
+      - name: Generate summary
+        env:
+          OVERALL_RESULT: ${{ needs.test-provider.result }}
+        run: |
+          echo "## LLM Provider Health Report" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "📅 $(date -u '+%Y-%m-%d %H:%M UTC') | Trigger: ${{ github.event_name }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          case "$OVERALL_RESULT" in
+            success)
+              echo "**Overall Status: ✅ All providers available**" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            failure)
+              echo "**Overall Status: ⚠️ One or more providers unavailable**" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "**Overall Status: ❓ Unknown ($OVERALL_RESULT)**" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+          esac
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Check the **test-provider** jobs above for per-provider details." >> "$GITHUB_STEP_SUMMARY"
+
+          # Also print to console
+          cat "$GITHUB_STEP_SUMMARY"
