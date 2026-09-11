@@ -68,12 +68,11 @@ jobs:
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          OPENROUTER_API_KEY_2: ${{ secrets.OPENROUTER_API_KEY_2 }}
-          OPENROUTER_API_KEY_3: ${{ secrets.OPENROUTER_API_KEY_3 }}
-          OPENROUTER_API_KEY_4: ${{ secrets.OPENROUTER_API_KEY_4 }}
-          OPENROUTER_API_KEY_5: ${{ secrets.OPENROUTER_API_KEY_5 }}
-          MODEL: ${{ vars.MODEL || 'nex-agi/nex-n2.5-mini:free' }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_API_KEY_2: ${{ secrets.GROQ_API_KEY_2 }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CLINE_API_KEY: ${{ secrets.CLINE_API_KEY }}
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
           # Complete file contents need a large completion budget; the helper's
           # 1500 default truncates real changesets. Override with the repo
           # variable PROGRAMMER_MAX_TOKENS if a bigger budget is needed.
@@ -152,9 +151,9 @@ jobs:
             exit 0
           fi
 
-          if [ -z "${OPENROUTER_API_KEY:-}${OPENROUTER_API_KEY_2:-}${OPENROUTER_API_KEY_3:-}${OPENROUTER_API_KEY_4:-}${OPENROUTER_API_KEY_5:-}" ]; then
-            fail_human "**Programmer cannot run:** \`OPENROUTER_API_KEY\` (or \`_2\`–\`_5\`) is not configured. Add the secret, then re-run by re-applying \`goal/ready\`. The goal was moved to \`needs-human\`."
-            echo "::error::OPENROUTER_API_KEY (or _2.._5) is not configured"
+          if [ -z "${GROQ_API_KEY:-}${GROQ_API_KEY_2:-}${GEMINI_API_KEY:-}${CLINE_API_KEY:-}${OLLAMA_API_KEY:-}" ]; then
+            fail_human "**Programmer cannot run:** no LLM provider key is configured (\`GROQ_API_KEY\` / \`GEMINI_API_KEY\` / \`CLINE_API_KEY\` / \`OLLAMA_API_KEY\`). Add a secret, then re-run by re-applying \`goal/ready\`. The goal was moved to \`needs-human\`."
+            echo "::error::no LLM provider key is configured (GROQ_API_KEY / GEMINI_API_KEY / CLINE_API_KEY / OLLAMA_API_KEY)"
             exit 1
           fi
 

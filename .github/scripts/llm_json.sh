@@ -1,32 +1,49 @@
 #!/usr/bin/env bash
 #
-# llm_json.sh — shared LLM JSON client for the agentic loop.
+# llm_json.sh — shared multi-provider LLM JSON client for the agentic loop.
 #
-# Posts a chat-completion request, retries transport failures with jittered
-# backoff, validates the reply against a jq boolean schema, and performs ONE
-# semantic correction retry before giving up loudly (NO silent fallback).
+# Posts a chat-completion request through an ordered chain of OpenAI-compatible
+# providers:
+#
+#   groq -> gemini -> cline -> ollama      (override with LLM_PROVIDER_ORDER)
+#
+# Every endpoint speaks the OpenAI wire format (`Authorization: Bearer` +
+# POST /chat/completions). Within one provider the API keys are tried in order;
+# within one key the provider's models are tried in order. A transport failure
+# is retried with jittered backoff, an auth/credit failure (401/402/403) rotates
+# to the next key, and a 400/404/422 (model unavailable / bad request) falls
+# through to the next model without failing the whole run. The reply is
+# validated against a jq boolean schema and ONE semantic correction retry is
+# attempted before giving up loudly (NO silent fallback).
 #
 # Usage:
 #   llm_json.sh --system-file SYS --user-file USER --out OUT \
 #               --schema '<JQ_BOOL_FILTER>' [--effort low|medium|high] [--max-tokens N]
 #
 # Env:
-#   OPENROUTER_API_KEY[_2.._5]  (>=1 required) bearer tokens, tried in order; rotate on 401/402 or transport exhaustion; never logged
-#   MODEL                 default nex-agi/nex-n2.5-mini:free (override via env MODEL / repo variable MODEL)
-#   OPENROUTER_ENDPOINT   default https://openrouter.ai/api/v1/chat/completions
-#   LLM_MAX_ATTEMPTS      default 3
-#   LLM_BACKOFF           default "5 15 45" seconds, indexed by attempt
-#   LLM_REASONING_EFFORT  explicit override; when SET (even to "") it wins over
-#                         --effort and an empty value disables reasoning_effort
+#   GROQ_API_KEY[_2]     groq bearer tokens, tried in order; never logged
+#   GEMINI_API_KEY[_2]   gemini bearer tokens
+#   CLINE_API_KEY        cline bearer token
+#   OLLAMA_API_KEY       ollama bearer token
+#   GROQ_ENDPOINT / GEMINI_ENDPOINT / CLINE_ENDPOINT / OLLAMA_ENDPOINT
+#                        override the provider endpoint (defaults below)
+#   GROQ_MODELS / GEMINI_MODELS / CLINE_MODELS / OLLAMA_MODELS
+#                        space-separated model list; overrides the default
+#   LLM_PROVIDER_ORDER   space/comma-separated subset/reorder of
+#                        "groq gemini cline ollama" (default: all, that order)
+#   LLM_MAX_ATTEMPTS     default 3
+#   LLM_BACKOFF          default "5 15 45" seconds, indexed by attempt
+#   LLM_REASONING_EFFORT explicit override; when SET (even to "") it wins over
+#                        --effort and an empty value disables reasoning_effort
 #
-# NOTE: OpenRouter may gate a model to "approved" apps; a direct API call then
-# returns HTTP 403. That is a model/account restriction, NOT a key failure, so
-# 403 is treated as fatal (no key rotation) and the provider's .error.message is
-# surfaced to make the reason visible.
+# reasoning_effort is sent ONLY when the resolved effort is non-empty AND the
+# active provider supports it (groq does; gemini/cline/ollama do not). If a
+# provider rejects the parameter with HTTP 400/422 whose message mentions
+# `reasoning_effort`, the same (provider,key,model) is retried once without it.
 #
 # Exit 0 only after writing schema-valid JSON to --out. Every failure path
 # prints an ::error :: diagnostic (HTTP code / attempt / reason) to stderr and
-# exits 1. The API key and the full response body are NEVER printed.
+# exits 1. API key values and full response bodies are NEVER printed.
 #
 set -euo pipefail
 
@@ -34,6 +51,9 @@ HDR_FILE="/tmp/llm_hdr.txt"
 BODY_FILE="/tmp/llm_body.txt"
 CANDIDATE_FILE="$(mktemp "${TMPDIR:-/tmp}/llm_candidate.XXXXXX")"
 trap 'rm -f "$CANDIDATE_FILE"' EXIT
+
+HTTP_CODE=""
+CONTENT=""
 
 usage() {
   cat <<'EOF'
@@ -84,18 +104,7 @@ case "$EFFORT_ARG" in
   *) fail "--effort must be one of: low, medium, high" ;;
 esac
 
-KEYS=()
-for _k in OPENROUTER_API_KEY OPENROUTER_API_KEY_2 OPENROUTER_API_KEY_3 OPENROUTER_API_KEY_4 OPENROUTER_API_KEY_5; do
-  _v="${!_k:-}"
-  [ -n "$_v" ] && KEYS+=("$_v")
-done
-unset _k _v
-[ "${#KEYS[@]}" -gt 0 ] || fail "no API key configured (set OPENROUTER_API_KEY, optionally _2.._5)"
-
-MODEL="${MODEL:-nex-agi/nex-n2.5-mini:free}"
-ENDPOINT="${OPENROUTER_ENDPOINT:-https://openrouter.ai/api/v1/chat/completions}"
 MAX_ATTEMPTS="${LLM_MAX_ATTEMPTS:-3}"
-BACKOFF="${LLM_BACKOFF:-5 15 45}"
 
 case "$MAX_ATTEMPTS" in
   ''|*[!0-9]*) fail "LLM_MAX_ATTEMPTS must be a positive integer" ;;
@@ -112,20 +121,100 @@ else
 fi
 
 # LLM_BACKOFF is a space-separated list; index by attempt (0-based).
+BACKOFF="${LLM_BACKOFF:-5 15 45}"
 read -r -a BACKOFF_ARR <<< "$BACKOFF"
 
-# Build the request body. $1 = assistant raw content ("" on the first call),
-# $2 = correction instruction ("" on the first call). Uses --rawfile for the
+# Ordered providers:
+#   name|endpoint_env|endpoint_default|keys_env|models_env|models_default|supports_effort
+PROVIDER_SPECS=(
+  "groq|GROQ_ENDPOINT|https://api.groq.com/openai/v1/chat/completions|GROQ_API_KEY GROQ_API_KEY_2|GROQ_MODELS|openai/gpt-oss-20b qwen/qwen3.6-27b groq/compound-mini|true"
+  "gemini|GEMINI_ENDPOINT|https://generativelanguage.googleapis.com/v1beta/openai/chat/completions|GEMINI_API_KEY GEMINI_API_KEY_2|GEMINI_MODELS|gemini-3.5-flash-lite gemini-3.1-flash-lite gemini-3-flash-preview|false"
+  "cline|CLINE_ENDPOINT|https://api.cline.bot/api/v1/chat/completions|CLINE_API_KEY|CLINE_MODELS|openrouter/free|false"
+  "ollama|OLLAMA_ENDPOINT|https://ollama.com/v1/chat/completions|OLLAMA_API_KEY|OLLAMA_MODELS|gpt-oss:20b gpt-oss:120b|false"
+)
+
+# provider_line NAME -> the matching spec line ("" not printed on miss).
+provider_line() {
+  local want="$1" spec
+  for spec in "${PROVIDER_SPECS[@]}"; do
+    if [ "${spec%%|*}" = "$want" ]; then
+      printf '%s' "$spec"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# provider_field NAME IDX -> the IDX'th (1-based) pipe-delimited field.
+provider_field() {
+  local want="$1" idx="$2" spec
+  spec="$(provider_line "$want")" || return 1
+  local IFS='|'
+  # shellcheck disable=SC2086
+  set -- $spec
+  printf '%s' "${!idx}"
+}
+
+# Resolve the active provider order: default all four; LLM_PROVIDER_ORDER may
+# be space- or comma-separated, is a subset/reorder, and unknown names are
+# ignored with a warning.
+ORDER_RAW="${LLM_PROVIDER_ORDER:-groq gemini cline ollama}"
+ORDER_RAW="${ORDER_RAW//,/ }"
+read -r -a ORDER_TOKENS <<< "$ORDER_RAW"
+ACTIVE_PROVIDERS=()
+for _name in "${ORDER_TOKENS[@]}"; do
+  [ -n "$_name" ] || continue
+  if provider_line "$_name" >/dev/null 2>&1; then
+    _dup="false"
+    if [ "${#ACTIVE_PROVIDERS[@]}" -gt 0 ]; then
+      for _seen in "${ACTIVE_PROVIDERS[@]}"; do
+        if [ "$_seen" = "$_name" ]; then
+          _dup="true"
+        fi
+      done
+    fi
+    if [ "$_dup" = "false" ]; then
+      ACTIVE_PROVIDERS+=("$_name")
+    fi
+  else
+    echo "llm_json: warning: unknown provider '${_name}' in LLM_PROVIDER_ORDER; ignoring" >&2
+  fi
+done
+unset _name _seen _dup
+[ "${#ACTIVE_PROVIDERS[@]}" -gt 0 ] || fail "LLM_PROVIDER_ORDER contained no known provider"
+
+# Collect keys across all active providers up front: with none configured there
+# is nothing to try and the run must fail before any network call.
+ANY_KEY="false"
+for _p in "${ACTIVE_PROVIDERS[@]}"; do
+  _keys_env="$(provider_field "$_p" 4)"
+  for _kv in $_keys_env; do
+    if [ -n "${!_kv:-}" ]; then
+      ANY_KEY="true"
+    fi
+  done
+done
+unset _p _keys_env _kv
+[ "$ANY_KEY" = "true" ] || fail "no API key configured (set GROQ_API_KEY / GEMINI_API_KEY / CLINE_API_KEY / OLLAMA_API_KEY)"
+
+# Build the request body. $1 = model, $2 = SEND_EFFORT ("true"/"false"),
+# $3 = assistant raw content ("" on the first call), $4 = correction
+# instruction ("" on the first call). reasoning_effort is included only when
+# SEND_EFFORT=true AND the resolved EFFORT is non-empty. Uses --rawfile for the
 # prompt files and --arg for everything else so untrusted text is never
 # interpolated into the shell.
 build_body() {
-  local assistant="${1:-}"
-  local correction="${2:-}"
+  local model="${1:-}" send_effort="${2:-false}"
+  local assistant="${3:-}" correction="${4:-}"
+  local effort_field=""
+  if [ "$send_effort" = "true" ] && [ -n "$EFFORT" ]; then
+    effort_field="$EFFORT"
+  fi
   jq -n \
     --rawfile sys "$SYS_FILE" \
     --rawfile user "$USER_FILE" \
-    --arg model "$MODEL" \
-    --arg effort "$EFFORT" \
+    --arg model "$model" \
+    --arg effort "$effort_field" \
     --argjson mt "$MAX_TOKENS" \
     --arg assistant "$assistant" \
     --arg correction "$correction" \
@@ -143,12 +232,13 @@ build_body() {
      + (if $effort != "" then {reasoning_effort: $effort} else {} end)'
 }
 
-# POST the body; capture HTTP code into HTTP_CODE. No --fail-with-body: the
-# code and body are both needed for retry/validation decisions.
+# POST the body to $1=ENDPOINT with $2=KEY; capture HTTP code into the global
+# HTTP_CODE. No --fail-with-body: the code and body are both needed for
+# retry/validation decisions.
 post() {
-  local body="$1" key="$2"
+  local endpoint="$1" key="$2" body="$3"
   HTTP_CODE="$(curl -sS -D "$HDR_FILE" -o "$BODY_FILE" -w '%{http_code}' \
-    -X POST "$ENDPOINT" \
+    -X POST "$endpoint" \
     -H "Authorization: Bearer $key" \
     -H "Content-Type: application/json" \
     -d "$body" || true)"
@@ -164,7 +254,7 @@ is_transport() {
 
 is_key_failure() {
   case "${1:-}" in
-    401|402) return 0 ;;
+    401|402|403) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -200,7 +290,8 @@ finish_reason() {
 # A free-tier daily cap is key-scoped, not a transient provider hiccup: OpenRouter
 # returns HTTP 429 with error.metadata.limit_source == "openrouter_free_tier_daily".
 # Detect it so the caller rotates to the next key immediately instead of burning
-# the backoff budget on a key that cannot succeed again today.
+# the backoff budget on a key that cannot succeed again today. Harmless when the
+# body does not carry the marker (plain 429 stays a transport retry).
 is_key_cap() {
   [ "${1:-}" = "429" ] || return 1
   jq -e '.error.metadata.limit_source == "openrouter_free_tier_daily"' "$BODY_FILE" >/dev/null 2>&1
@@ -245,91 +336,162 @@ retry_after() {
   printf '%s' "$ra"
 }
 
-# Transport retry + key rotation helper: POST $1 with jittered backoff /
-# Retry-After on transport failures, rotating to the next configured key on an
-# auth/credit failure (401/402) or once a key's transport retries are
-# exhausted. Returns 0 only on HTTP 200. Used for BOTH the primary call and the
-# single semantic correction. A non-retryable, non-key HTTP code (e.g. 403/400/
-# 404/422) fails loudly without rotating: the request/model is wrong, not the
-# key — 403 in particular means OpenRouter gated the model to approved apps.
-# $2 = phase label for diagnostics. The key VALUE is never logged; only the key
-# index (ki/N) and HTTP codes.
-post_with_retries() {
-  local body="$1" phase="${2:-primary}"
-  local n="${#KEYS[@]}"
-  local ki=0 key
-  for key in "${KEYS[@]}"; do
-    ki=$(( ki + 1 ))
-    local attempt=1
-    while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
-      post "$body" "$key"
-      if [ "$HTTP_CODE" = "200" ]; then
-        if [ -n "$(extract_content)" ]; then
-          echo "llm_json: HTTP 200 (${phase}) on key ${ki}/${n}, attempt ${attempt}/${MAX_ATTEMPTS}" >&2
-          return 0
-        fi
-        # HTTP 200 with no assistant content: some providers return an
-        # overload/gateway {"error":...} body (or an empty/truncated message)
-        # with a success status. Treat it as transient exactly like a transport
-        # failure: back off, retry, then rotate keys. Previously this was fatal
-        # on the first attempt (NOTES.ts "known gap").
-        local empty_msg empty_fr
-        empty_msg="$(api_error_message)"
-        empty_fr="$(finish_reason)"
-        if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
-          local edelay
-          edelay="$(retry_after)"
-          if [ -n "$edelay" ]; then
-            echo "llm_json: HTTP 200 empty content (${phase}) on key ${ki}/${n}${empty_fr:+ [finish=${empty_fr}]}${empty_msg:+ : ${empty_msg}}; honoring Retry-After=${edelay}s (attempt ${attempt}/${MAX_ATTEMPTS})" >&2
-          else
-            edelay="$(backoff_for $(( attempt - 1 )))"
-            echo "llm_json: HTTP 200 empty content (${phase}) on key ${ki}/${n}${empty_fr:+ [finish=${empty_fr}]}${empty_msg:+ : ${empty_msg}}; backoff ${edelay}s before attempt $(( attempt + 1 ))/${MAX_ATTEMPTS}" >&2
-          fi
-          sleep "$edelay"
-          attempt=$(( attempt + 1 ))
-          continue
-        fi
-        echo "llm_json: key ${ki}/${n} empty-content exhausted (HTTP 200, ${phase})${empty_fr:+ [finish=${empty_fr}]}${empty_msg:+ : ${empty_msg}} after ${attempt} attempt(s); rotating" >&2
-        break
-      fi
-      if is_key_cap "$HTTP_CODE"; then
-        echo "llm_json: key ${ki}/${n} hit the free-tier daily cap (HTTP 429); rotating (${phase})" >&2
-        break
-      fi
-      if is_key_failure "$HTTP_CODE"; then
-        echo "llm_json: key ${ki}/${n} rejected HTTP ${HTTP_CODE}; rotating (${phase})" >&2
-        break
-      fi
-      if is_transport "$HTTP_CODE"; then
-        if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
-          local delay
-          delay="$(retry_after)"
-          if [ -n "$delay" ]; then
-            echo "llm_json: HTTP ${HTTP_CODE} (${phase}) on key ${ki}/${n}; honoring Retry-After=${delay}s (attempt ${attempt}/${MAX_ATTEMPTS})" >&2
-          else
-            delay="$(backoff_for $(( attempt - 1 )))"
-            echo "llm_json: transport HTTP ${HTTP_CODE} (${phase}) on key ${ki}/${n}; backoff ${delay}s before attempt $(( attempt + 1 ))/${MAX_ATTEMPTS}" >&2
-          fi
-          sleep "$delay"
-          attempt=$(( attempt + 1 ))
-          continue
-        fi
-        echo "llm_json: key ${ki}/${n} transport exhausted (HTTP ${HTTP_CODE}, ${phase}) after ${attempt} attempt(s); rotating" >&2
-        break
-      fi
-      local api_msg; api_msg="$(api_error_message)"
-      if [ -n "$api_msg" ]; then
-        fail "HTTP ${HTTP_CODE} is not retryable (${phase}, attempt ${attempt}/${MAX_ATTEMPTS}): ${api_msg}"
-      else
-        fail "HTTP ${HTTP_CODE} is not retryable (${phase}, attempt ${attempt}/${MAX_ATTEMPTS})"
+# request_with_fallback PHASE ASSISTANT CORRECTION -> sets global CONTENT on
+# success, otherwise fails the run. Providers are tried in ACTIVE_PROVIDERS
+# order; within a provider keys rotate in order; within a key models fall
+# through in order. The key VALUE is never logged; only the provider, model and
+# key index (ki/N).
+request_with_fallback() {
+  local phase="${1:-primary}" assistant="${2:-}" correction="${3:-}"
+  local last_msg="" last_code=""
+  local pname endpoint endp_env endp_def keys_env models_env models_def supports_effort
+  local key key_idx nkeys kv models model attempt send_effort force_no_effort next_key
+  local cmsg fr delay
+
+  for pname in "${ACTIVE_PROVIDERS[@]}"; do
+    endp_env="$(provider_field "$pname" 2)"
+    endp_def="$(provider_field "$pname" 3)"
+    keys_env="$(provider_field "$pname" 4)"
+    models_env="$(provider_field "$pname" 5)"
+    models_def="$(provider_field "$pname" 6)"
+    supports_effort="$(provider_field "$pname" 7)"
+
+    endpoint="${!endp_env:-}"
+    [ -n "$endpoint" ] || endpoint="$endp_def"
+
+    PKEYS=()
+    for kv in $keys_env; do
+      if [ -n "${!kv:-}" ]; then
+        PKEYS+=("${!kv}")
       fi
     done
+    if [ "${#PKEYS[@]}" -eq 0 ]; then
+      echo "llm_json: skipping provider ${pname} (no key configured)" >&2
+      continue
+    fi
+
+    models="$models_def"
+    if [ -n "${!models_env:-}" ]; then
+      models="${!models_env}"
+    fi
+    read -r -a MODEL_ARR <<< "$models"
+
+    nkeys="${#PKEYS[@]}"
+    key_idx=0
+    for key in "${PKEYS[@]}"; do
+      key_idx=$(( key_idx + 1 ))
+      for model in "${MODEL_ARR[@]}"; do
+        # force_no_effort: set when this (provider,key,model) rejected
+        # reasoning_effort, so the retry omits it. Once per model.
+        # next_key: set on a key-level failure (auth/credit/daily cap) so the
+        # model loop breaks out to the NEXT KEY instead of the next model.
+        force_no_effort="false"
+        next_key="false"
+        attempt=1
+        while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
+          if [ "$force_no_effort" = "true" ]; then
+            send_effort="false"
+          else
+            send_effort="$supports_effort"
+          fi
+          local body
+          body="$(build_body "$model" "$send_effort" "$assistant" "$correction")"
+          post "$endpoint" "$key" "$body"
+          cmsg="$(api_error_message)"
+          if [ -n "$cmsg" ]; then
+            last_msg="$cmsg"
+          fi
+          last_code="$HTTP_CODE"
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            CONTENT="$(extract_content)"
+            if [ -n "$CONTENT" ]; then
+              echo "llm_json: HTTP 200 (${phase}) via ${pname}/${model} on key ${key_idx}/${nkeys}, attempt ${attempt}/${MAX_ATTEMPTS}" >&2
+              return 0
+            fi
+            # HTTP 200 with no assistant content: some providers return an
+            # overload/gateway {"error":...} body (or an empty/truncated
+            # message) with a success status. Treat it as transient: back off,
+            # retry, then move on to the next model.
+            fr="$(finish_reason)"
+            if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+              delay="$(retry_after)"
+              if [ -n "$delay" ]; then
+                echo "llm_json: HTTP 200 empty content (${phase}) via ${pname}/${model} on key ${key_idx}/${nkeys}${fr:+ [finish=${fr}]}${cmsg:+ : ${cmsg}}; honoring Retry-After=${delay}s (attempt ${attempt}/${MAX_ATTEMPTS})" >&2
+              else
+                delay="$(backoff_for $(( attempt - 1 )))"
+                echo "llm_json: HTTP 200 empty content (${phase}) via ${pname}/${model} on key ${key_idx}/${nkeys}${fr:+ [finish=${fr}]}${cmsg:+ : ${cmsg}}; backoff ${delay}s before attempt $(( attempt + 1 ))/${MAX_ATTEMPTS}" >&2
+              fi
+              sleep "$delay"
+              attempt=$(( attempt + 1 ))
+              continue
+            fi
+            echo "llm_json: empty-content exhausted (HTTP 200, ${phase}, ${pname}/${model})${fr:+ [finish=${fr}]}${cmsg:+ : ${cmsg}} after ${attempt} attempt(s); next model" >&2
+            break
+          fi
+
+          if is_key_cap "$HTTP_CODE"; then
+            echo "llm_json: key ${key_idx}/${nkeys} hit the free-tier daily cap (HTTP 429, ${pname}); next key" >&2
+            next_key="true"
+            break
+          fi
+          if is_key_failure "$HTTP_CODE"; then
+            echo "llm_json: key ${key_idx}/${nkeys} rejected HTTP ${HTTP_CODE} (${phase}, ${pname}); next key" >&2
+            next_key="true"
+            break
+          fi
+
+          case "$HTTP_CODE" in
+            400|404|422)
+              # Some models reject the reasoning_effort parameter; retry this
+              # same (provider,key,model) ONCE without it before moving on.
+              if [ "$force_no_effort" = "false" ] && [ "$supports_effort" = "true" ] && [ -n "$EFFORT" ]; then
+                case "$cmsg" in
+                  *reasoning_effort*)
+                    echo "llm_json: HTTP ${HTTP_CODE} (${phase}, ${pname}/${model}) mentions reasoning_effort; retrying once without it" >&2
+                    force_no_effort="true"
+                    continue
+                    ;;
+                esac
+              fi
+              echo "llm_json: HTTP ${HTTP_CODE} (${phase}, ${pname}/${model}); model unavailable, next model${cmsg:+ : ${cmsg}}" >&2
+              break
+              ;;
+          esac
+
+          if is_transport "$HTTP_CODE"; then
+            if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+              delay="$(retry_after)"
+              if [ -n "$delay" ]; then
+                echo "llm_json: HTTP ${HTTP_CODE} (${phase}) via ${pname}/${model} on key ${key_idx}/${nkeys}; honoring Retry-After=${delay}s (attempt ${attempt}/${MAX_ATTEMPTS})" >&2
+              else
+                delay="$(backoff_for $(( attempt - 1 )))"
+                echo "llm_json: transport HTTP ${HTTP_CODE} (${phase}) via ${pname}/${model} on key ${key_idx}/${nkeys}; backoff ${delay}s before attempt $(( attempt + 1 ))/${MAX_ATTEMPTS}" >&2
+              fi
+              sleep "$delay"
+              attempt=$(( attempt + 1 ))
+              continue
+            fi
+            echo "llm_json: transport exhausted (HTTP ${HTTP_CODE}, ${phase}, ${pname}/${model}); next model" >&2
+            break
+          fi
+
+          # Any other unexpected status: record it and try the next model
+          # rather than aborting the whole chain.
+          echo "llm_json: HTTP ${HTTP_CODE} (${phase}, ${pname}/${model}); next model${cmsg:+ : ${cmsg}}" >&2
+          break
+        done
+        if [ "$next_key" = "true" ]; then
+          break
+        fi
+      done
+    done
   done
-  local last_msg; last_msg="$(api_error_message)"
+
   if [ -n "$last_msg" ]; then
-    fail "all ${n} API key(s) failed on ${phase}: ${last_msg}"
+    fail "all providers failed on ${phase}: ${last_msg} (last HTTP ${last_code})"
   else
-    fail "all ${n} API key(s) failed on ${phase}"
+    fail "all providers failed on ${phase} (last HTTP ${last_code})"
   fi
 }
 
@@ -362,14 +524,11 @@ strip_fences() {
   '
 }
 
-# --- primary call + transport retries -------------------------------------
-BODY="$(build_body)"
-post_with_retries "$BODY" "primary"
+# --- primary call (provider chain + transport retries) --------------------
+request_with_fallback "primary" "" ""
 
-# --- extract content ------------------------------------------------------
-# post_with_retries already guarantees non-empty content on success; this is a
-# defensive re-check (and the single source of the extraction logic).
-CONTENT="$(extract_content)"
+# request_with_fallback already guarantees non-empty content on success; this
+# is a defensive re-check (and the single source of the extraction logic).
 [ -n "$CONTENT" ] || fail "HTTP 200 but response contained no message content"
 
 printf '%s' "$CONTENT" | strip_fences > "$CANDIDATE_FILE"
@@ -383,10 +542,8 @@ fi
 # --- ONE semantic correction retry (with its own transport retries) --------
 echo "llm_json: response failed schema validation; attempting one semantic correction" >&2
 CORRECTION_PROMPT="Your previous reply was not valid JSON matching the required schema. Reply with ONLY valid JSON, no markdown, no prose."
-BODY="$(build_body "$CONTENT" "$CORRECTION_PROMPT")"
-post_with_retries "$BODY" "correction"
+request_with_fallback "correction" "$CONTENT" "$CORRECTION_PROMPT"
 
-CONTENT="$(extract_content)"
 [ -n "$CONTENT" ] || fail "correction HTTP 200 but response contained no message content"
 
 printf '%s' "$CONTENT" | strip_fences > "$CANDIDATE_FILE"
