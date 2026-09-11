@@ -80,6 +80,12 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           CLINE_API_KEY: ${{ secrets.CLINE_API_KEY }}
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_API_KEY_2: ${{ secrets.OPENROUTER_API_KEY_2 }}
+          OPENROUTER_API_KEY_3: ${{ secrets.OPENROUTER_API_KEY_3 }}
+          OPENROUTER_API_KEY_4: ${{ secrets.OPENROUTER_API_KEY_4 }}
+          OPENROUTER_API_KEY_5: ${{ secrets.OPENROUTER_API_KEY_5 }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         run: |
           set -euo pipefail
 
@@ -209,9 +215,9 @@ jobs:
               exit 0
             fi
 
-            if [ -z "${GROQ_API_KEY:-}${GEMINI_API_KEY:-}${CLINE_API_KEY:-}${OLLAMA_API_KEY:-}" ]; then
-              fail_human "**PO review cannot run:** no LLM provider key is configured (\`GROQ_API_KEY\` / \`GEMINI_API_KEY\` / \`CLINE_API_KEY\` / \`OLLAMA_API_KEY\`). Add a secret, then re-apply \`goal/review\`. The goal was moved to \`needs-human\`."
-              echo "::error::no LLM provider key is configured (GROQ_API_KEY / GEMINI_API_KEY / CLINE_API_KEY / OLLAMA_API_KEY)"
+            if [ -z "${GROQ_API_KEY:-}${GEMINI_API_KEY:-}${CLINE_API_KEY:-}${OLLAMA_API_KEY:-}${OPENROUTER_API_KEY:-}${OPENCODE_API_KEY:-}" ]; then
+              fail_human "**PO review cannot run:** no LLM provider key is configured (\`GROQ_API_KEY\` / \`GEMINI_API_KEY\` / \`CLINE_API_KEY\` / \`OLLAMA_API_KEY\` / \`OPENROUTER_API_KEY\` / \`OPENCODE_API_KEY\`). Add a secret, then re-apply \`goal/review\`. The goal was moved to \`needs-human\`."
+              echo "::error::no LLM provider key is configured (GROQ_API_KEY / GEMINI_API_KEY / CLINE_API_KEY / OLLAMA_API_KEY / OPENROUTER_API_KEY / OPENCODE_API_KEY)"
               exit 1
             fi
 
