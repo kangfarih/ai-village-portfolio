@@ -20,6 +20,13 @@ permissions: {}
 # goal/ticket exists, the orchestration is a no-op (skips the LLM, delegation
 # and TL dispatch) so a duplicate dispatch cannot re-derive goals or re-dispatch
 # the Tech Lead. Pass `force=true` to bypass the guard (manual re-run).
+#
+# Per-parent goal-key marker: every created child carries
+# `<!-- agent-goal-key:v1 parent:#N kind:<kind> key:<key> -->` as its first
+# line, where <key> is the normalized `<kind>:<title>`. Before creating, the
+# delegate step skips any child whose exact marker already appears in ANY
+# `ai-goal` OR `ai-ticket` body, so re-runs and `force=true` runs reconcile
+# (create only genuinely new keys) instead of duplicating re-phrased goals.
 on:
   workflow_dispatch:
     inputs:
@@ -248,9 +255,9 @@ jobs:
           # index can lag, which would leave a freshly created goal undetected
           # and stall the chain. Scope to THIS parent locally by exact title
           # suffix instead, matching the dispatch step below.
-          EXISTING_JSON="$(gh issue list --label ai-goal --state all --limit 200 \
-            --json title,url)"
-          EXISTING_JSON="$(printf '%s' "$EXISTING_JSON" | jq --arg suffix "(from #${ISSUE_NUMBER})" \
+          ALL_GOALS_JSON="$(gh issue list --label ai-goal --state all --limit 200 \
+            --json title,url,body)"
+          EXISTING_JSON="$(printf '%s' "$ALL_GOALS_JSON" | jq --arg suffix "(from #${ISSUE_NUMBER})" \
             '[.[] | select(.title | endswith($suffix))]')"
           EXISTING_TITLES="$(printf '%s' "$EXISTING_JSON" | jq -r '.[].title')"
 
@@ -259,16 +266,26 @@ jobs:
           # title exists AND its body carries `Origin: #<parent>`; this tolerates
           # same-titled tickets from other parents. Query failure is LOUD.
           EXISTING_TICKETS_JSON="$(gh issue list --label ai-ticket --state all --limit 200 \
-            --json title,body)"
+            --json title,url,body)"
 
           # W5: validate the fetched list once, plainly, so a garbled/empty
           # body trips the ERR trap instead of masquerading as "no tickets".
           printf '%s' "$EXISTING_TICKETS_JSON" | jq -e 'type=="array"' >/dev/null
 
+          # Key-based dedupe searches BOTH goal and ticket bodies.
+          EXISTING_ALL_JSON="$(jq -n --argjson g "$ALL_GOALS_JSON" --argjson t "$EXISTING_TICKETS_JSON" '$g + $t')"
+
           # B1: match the exact delimited marker this workflow writes (with its
           # terminator). A bare substring `Origin: #1` would be satisfied by
           # parent #12's body, silently dropping this parent's ticket.
           TICKET_MARKER="<!-- agent-ticket:v1 origin:#${ISSUE_NUMBER} -->"
+
+          # Deterministic per-parent goal key: dedupes re-phrased duplicates
+          # across re-runs/force runs (case/spacing/punctuation insensitive).
+          goal_key() {
+            printf '%s' "$1" | tr '[:upper:]' '[:lower:]' \
+              | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-80
+          }
 
           MARKER="$(gh issue view "$ISSUE_NUMBER" --json comments \
             --jq '[.comments[].body] | join("\n") | contains("<!-- orchestrator:v1 -->")')"
@@ -301,6 +318,8 @@ jobs:
             # W2: drop model lines that could shadow trusted metadata, then
             # neutralize mentions in the detail.
             SAFE_DETAIL="$(printf '%s' "$DETAIL" | strip_trusted_lines | neutralize_mentions)"
+            KEY="$(goal_key "${KIND}:${TITLE}")"
+            KEY_MARKER="<!-- agent-goal-key:v1 parent:#${ISSUE_NUMBER} kind:${KIND} key:${KEY} -->"
             if [ "$KIND" = "code" ]; then
               # Development goal: exactly the pre-Phase-5a behavior.
               SUB_TITLE="[GOAL] ${SAFE_TITLE} (from #${ISSUE_NUMBER})"
@@ -310,10 +329,17 @@ jobs:
                 echo "Skipping existing goal: ${SUB_TITLE}"
                 continue
               fi
+              if printf '%s' "$EXISTING_ALL_JSON" | jq -e --arg m "$KEY_MARKER" \
+                  '[.[] | select((.body // "") | contains($m))] | length > 0' >/dev/null; then
+                URL="$(printf '%s' "$EXISTING_ALL_JSON" | jq -r --arg m "$KEY_MARKER" 'first(.[] | select((.body // "") | contains($m)) | .url) // ""')"
+                printf '%s\n' "- ${SUB_TITLE} - ${URL} _(existing, key)_" >> /tmp/goal_links.md
+                echo "Skipping existing goal (key): ${SUB_TITLE}"
+                continue
+              fi
               # W2: trusted metadata FIRST, then the sanitized detail, so a
               # prompt-injected `Parent:`/`Kind:` inside detail cannot shadow it.
-              SUB_BODY="$(printf 'Kind: %s\nIntegration branch: issue/%s\nParent: #%s\nAcceptance: post result as comment + link evidence.\n\n%s\n' \
-                "$KIND" "$ISSUE_NUMBER" "$ISSUE_NUMBER" "$SAFE_DETAIL")"
+              SUB_BODY="$(printf '%s\nKind: %s\nIntegration branch: issue/%s\nParent: #%s\nAcceptance: post result as comment + link evidence.\n\n%s\n' \
+                "$KEY_MARKER" "$KIND" "$ISSUE_NUMBER" "$ISSUE_NUMBER" "$SAFE_DETAIL")"
               URL="$(gh issue create --title "$SUB_TITLE" --body "$SUB_BODY" --label "ai-goal" --label "goal/tl")"
               printf '%s\n' "- ${SUB_TITLE} - ${URL}" >> /tmp/goal_links.md
               CREATED=$((CREATED + 1))
@@ -336,10 +362,17 @@ jobs:
                 echo "Skipping existing ticket: ${SUB_TITLE}"
                 continue
               fi
+              if printf '%s' "$EXISTING_ALL_JSON" | jq -e --arg m "$KEY_MARKER" \
+                  '[.[] | select((.body // "") | contains($m))] | length > 0' >/dev/null; then
+                URL="$(printf '%s' "$EXISTING_ALL_JSON" | jq -r --arg m "$KEY_MARKER" 'first(.[] | select((.body // "") | contains($m)) | .url) // ""')"
+                printf '%s\n' "- ${SUB_TITLE} - ${URL} _(existing, key)_" >> /tmp/ticket_links.md
+                echo "Skipping existing ticket (key): ${SUB_TITLE}"
+                continue
+              fi
               # W2: trusted metadata FIRST (exact marker + Origin + Kind), then
               # the sanitized detail.
-              SUB_BODY="$(printf '%s\nOrigin: #%s\nKind: %s\n\n## %s\n\n%s\n\nGenerated by agent-orchestrate from issue #%s.\n' \
-                "$TICKET_MARKER" "$ISSUE_NUMBER" "$KIND" "$KIND_TITLE" "$SAFE_DETAIL" "$ISSUE_NUMBER")"
+              SUB_BODY="$(printf '%s\n%s\nOrigin: #%s\nKind: %s\n\n## %s\n\n%s\n\nGenerated by agent-orchestrate from issue #%s.\n' \
+                "$KEY_MARKER" "$TICKET_MARKER" "$ISSUE_NUMBER" "$KIND" "$KIND_TITLE" "$SAFE_DETAIL" "$ISSUE_NUMBER")"
               URL="$(gh issue create --title "$SUB_TITLE" --body "$SUB_BODY" --label "kind/${KIND}" --label "ai-ticket")"
               printf '%s\n' "- ${SUB_TITLE} - ${URL}" >> /tmp/ticket_links.md
               TICKETS_CREATED=$((TICKETS_CREATED + 1))
