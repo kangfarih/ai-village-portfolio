@@ -12,21 +12,45 @@
 
 ## 1. Roles, triggers, budgets
 
-| Role | Workflow(s) | Entry trigger | Effort | Model |
+| Role | Workflow(s) | Entry trigger | Effort | Provider chain |
 |---|---|---|---|---|
-| **PO** | `agent-orchestrate`, `agent-review` | `ai-orchestrate`; PO verdict pass on `goal/review` | **high** | `${{ vars.MODEL }}` (default `nex-agi/nex-n2.5-mini:free`) |
-| **TL** | `agent-techlead` | `goal/tl` | **medium** | `${{ vars.MODEL }}` (default `nex-agi/nex-n2.5-mini:free`) |
-| **Programmer** | `agent-programmer` | `goal/ready` | **medium** (`kind: code` only; non-dev goals never reach the Programmer — see §11) | `${{ vars.MODEL }}` (default `nex-agi/nex-n2.5-mini:free`) |
+| **PO** | `agent-orchestrate`, `agent-review` | `ai-orchestrate`; PO verdict pass on `goal/review` | **high** | multi-provider fallback (below) |
+| **TL** | `agent-techlead` | `goal/tl` | **medium** | multi-provider fallback (below) |
+| **Programmer** | `agent-programmer` | `goal/ready` | **medium** (`kind: code` only; non-dev goals never reach the Programmer — see §11) | multi-provider fallback (below) |
 
 Rules:
 
 - **One LLM call per role per issue.** `llm_json.sh` may internally make a
   single extra schema-correction call, but no role calls the model more than
   once for a given issue.
-- All model traffic goes through `.github/scripts/llm_json.sh` (transport
-  backoff + schema validation + one correction). No role inlines its own curl.
+- All model traffic goes through `.github/scripts/llm_json.sh` (ordered
+  multi-provider fallback + transport backoff + schema validation + one
+  correction). No role inlines its own curl.
 - Missing config or exhausted retries = **loud failure** (issue comment +
   non-zero exit); there is no template/silent fallback.
+
+### LLM provider chain
+
+`llm_json.sh` tries an ordered chain of OpenAI-compatible providers. Keys
+rotate within a provider; models fall through within a key; providers are tried
+in order. `reasoning_effort` is sent **only** to providers that support it and
+only when the resolved effort is non-empty.
+
+| Order | Provider | Endpoint (default) | Key env vars (in order) | Models (try in order) | `reasoning_effort` |
+|---|---|---|---|---|---|
+| 1 | `groq` | `https://api.groq.com/openai/v1/chat/completions` | `GROQ_API_KEY`, `GROQ_API_KEY_2` | `openai/gpt-oss-20b`, `qwen/qwen3.6-27b`, `groq/compound-mini` | yes |
+| 2 | `gemini` | `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions` | `GEMINI_API_KEY`, `GEMINI_API_KEY_2` | `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview` | no |
+| 3 | `cline` | `https://api.cline.bot/api/v1/chat/completions` | `CLINE_API_KEY` | `openrouter/free` | no |
+| 4 | `ollama` | `https://ollama.com/v1/chat/completions` | `OLLAMA_API_KEY` | `gpt-oss:20b`, `gpt-oss:120b` | no |
+
+Endpoints override via `GROQ_ENDPOINT` / `GEMINI_ENDPOINT` / `CLINE_ENDPOINT` /
+`OLLAMA_ENDPOINT`; model lists via `GROQ_MODELS` / `GEMINI_MODELS` /
+`CLINE_MODELS` / `OLLAMA_MODELS` (space-separated); the order/subset via
+`LLM_PROVIDER_ORDER`. HTTP 400/404/422 falls through to the next model while
+401/402/403 advances to the next key/provider. The old single-model
+`vars.MODEL` repository variable is **no longer used** — each provider has its
+own model list.
+
 
 ---
 

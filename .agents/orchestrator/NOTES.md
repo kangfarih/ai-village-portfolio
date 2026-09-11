@@ -2440,3 +2440,132 @@ more re-phrasings but risks false merges of genuinely distinct goals; raise
 existing children that already carry the `parent:#N kind:<kind> ` goal-key
 marker, so pre-hardening children (no marker) are never fuzzy candidates.
 
+---
+
+## Multi-provider LLM fallback (groq -> gemini -> cline -> ollama)
+
+**What changed.** `.github/scripts/llm_json.sh` no longer talks to a single
+OpenRouter endpoint with a repo-variable `MODEL` pin. It now walks an ordered
+chain of OpenAI-compatible providers, rotating keys within a provider and
+falling through models within a key:
+
+| Order | Provider | Endpoint (default) | Key env vars (in order) | Models (try in order) | `reasoning_effort` |
+|---|---|---|---|---|---|
+| 1 | `groq` | `https://api.groq.com/openai/v1/chat/completions` | `GROQ_API_KEY`, `GROQ_API_KEY_2` | `openai/gpt-oss-20b`, `qwen/qwen3.6-27b`, `groq/compound-mini` | yes |
+| 2 | `gemini` | `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions` | `GEMINI_API_KEY`, `GEMINI_API_KEY_2` | `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview` | no |
+| 3 | `cline` | `https://api.cline.bot/api/v1/chat/completions` | `CLINE_API_KEY` | `openrouter/free` | no |
+| 4 | `ollama` | `https://ollama.com/v1/chat/completions` | `OLLAMA_API_KEY` | `gpt-oss:20b`, `gpt-oss:120b` | no |
+
+Implementation details:
+
+- A `PROVIDER_SPECS` table (`name|endpoint_env|endpoint_default|keys_env|models_env|models_default|supports_effort`)
+  drives everything. `provider_field NAME IDX` reads a field; `LLM_PROVIDER_ORDER`
+  (space- or comma-separated) selects/reorders a subset, and unknown names are
+  ignored with a warning.
+- All keys across the active providers are collected up front; with none set the
+  run fails before any network call:
+  `no API key configured (set GROQ_API_KEY / GEMINI_API_KEY / CLINE_API_KEY / OLLAMA_API_KEY)`.
+  A provider with no key is skipped with a log line.
+- `post ENDPOINT KEY BODY` sets the global `HTTP_CODE` and writes `$HDR_FILE` /
+  `$BODY_FILE`; `build_body MODEL SEND_EFFORT ASSISTANT CORRECTION` includes
+  `reasoning_effort` only when `SEND_EFFORT=true` **and** the resolved `EFFORT`
+  is non-empty. Effort is passed as `true` only for groq.
+- `request_with_fallback PHASE ASSISTANT CORRECTION` loops providers -> keys ->
+  models. Per `(provider,key,model)` it transport-retries up to
+  `LLM_MAX_ATTEMPTS` (HTTP 000/429/500/502/503/504) using `retry_after`
+  (capped at 60s) or jittered `backoff_for`; HTTP 200 with empty content is
+  logged (`finish_reason` + `api_error_message`) and retried.
+  - HTTP 400/404/422 -> next **model** (model unavailable / bad request); if the
+    provider error message mentions `reasoning_effort`, the same
+    `(provider,key,model)` is retried once with `SEND_EFFORT=false`.
+  - HTTP 401/402/403 and the OpenRouter-style daily-cap 429 (`is_key_cap`) ->
+    next **key**, then next provider.
+  - Transport exhaustion on a `(key,model)` -> next model.
+  - On HTTP 200 with non-empty content it sets the global `CONTENT` and logs
+    `HTTP 200 (${phase}) via ${provider}/${model} on key ${ki}/${n}`.
+  - After every provider/key/model, it fails with the last non-empty provider
+    message and last HTTP code.
+- All original helpers are preserved (`fail`, `build_body`, `post`,
+  `is_transport`, `is_key_failure`, `api_error_message`, `extract_content`,
+  `finish_reason`, `is_key_cap`, `with_jitter`, `backoff_for`, `retry_after`,
+  `write_out`, `strip_fences`); `is_key_failure` now also covers 403. The
+  semantic-correction retry, jq schema validation, fence stripping, atomic
+  `--out` write, `LLM_BACKOFF`, `LLM_REASONING_EFFORT`, `--effort`,
+  `--max-tokens` are unchanged. `MODEL` is dropped entirely; no global model pin
+  remains. Key values and raw response bodies are never logged.
+
+The 5 role workflows (`agent-triage`, `agent-orchestrate`, `agent-techlead`,
+`agent-programmer`, `agent-review`) dropped `OPENROUTER_API_KEY[_2.._5]` and the
+`MODEL: ${{ vars.MODEL || ... }}` line in favour of the 5 provider secrets, and
+their pre-flight guards now test
+`GROQ_API_KEY`/`GROQ_API_KEY_2`/`GEMINI_API_KEY`/`CLINE_API_KEY`/`OLLAMA_API_KEY`.
+`agent-triage` has no guard (it never fails); the other four keep their
+role-specific comment and `exit 1`.
+
+**Rationale.** A single free-tier provider (or one key) hitting a daily cap,
+rate limit, or outage previously aborted the whole agent loop. The chain gives
+each run four independent providers and, within groq/gemini, two keys. Auth
+failures (401/402/403) and daily caps advance the key; model-specific failures
+(400/404/422) advance the model, so one bad model id cannot take down the run.
+`reasoning_effort` is only sent where supported so providers that reject the
+parameter (gemini/cline/ollama, and some groq models) are not broken, with a
+one-shot retry for the models that do reject it.
+
+**Verification (actual output).**
+
+- `bash -n .github/scripts/llm_json.sh` -> `bash -n OK`; mode still `0755`.
+- `ruby -ryaml -e "YAML.load_file(...)"` for all 5 workflows -> `YAML OK` each.
+- Extracted all **25** `run:` blocks (Ruby YAML walk) and `bash -n` each ->
+  `total=25 fail=0`.
+- Functional harness: a mock `curl` PATH shim driven by a per-host scenario
+  queue, run against real `jq` and `--schema`, with captured request bodies and
+  `Authorization` headers. **76/76 assertions pass**, covering the 12 required
+  scenarios plus two extras:
+  1. groq key1 200 -> success via `groq/openai/gpt-oss-20b`; no other provider
+     contacted.
+  2. groq key1 401, key2 200 -> key rotation (`k1,k2`), same model.
+  3. groq 400 on model1 -> same key tries model2 -> 200.
+  4. groq both keys daily-cap 429 -> falls through to gemini (2 groq requests).
+  5. groq no keys, gemini set -> groq skipped with log, gemini used.
+  6. all providers fail -> exit 1, `all providers failed on primary: err-ollama
+     (last HTTP 400)`, no secret value in stdout/stderr.
+  7. HTTP 200 empty content -> retried (`MAX_ATTEMPTS=2`) then next model.
+  8. non-schema primary -> one correction call (4 messages, assistant +
+     correction prompt) -> success.
+  9. no keys -> exact `fail "no API key configured ..."`, zero HTTP calls.
+  10. `reasoning_effort` present in groq body (`"high"`) and absent from
+      gemini/cline/ollama bodies.
+  11. `LLM_PROVIDER_ORDER=ollama` -> only ollama contacted.
+  12. no key value appears in captured stdout/stderr.
+  13. groq 400 mentioning `reasoning_effort` -> retried once without it.
+  14. comma/space `LLM_PROVIDER_ORDER` + unknown name warning; ollama first.
+
+**Commit + push record (dev only — NEVER main).**
+
+- Commit 1 `2bc19c2` —
+  `feat(llm): multi-provider fallback chain (groq -> gemini -> cline -> ollama)`;
+  files: `.github/scripts/llm_json.sh` + the 5 role workflows.
+  `git push origin dev` OK (`064181c..2bc19c2  dev -> dev`).
+- Commit 2 (this NOTES + STATE-MACHINE docs) —
+  `docs(agents): record multi-provider LLM fallback`; its own SHA/push range
+  recorded in the task report post-push (not invented here).
+
+**Residual risks.**
+
+- The chain is verified only against the mock harness; there is no automated
+  live-provider contract test (model names/endpoints are from the task spec and
+  may drift). All four are overridable via `*_MODELS` / `*_ENDPOINT`.
+- `supports_effort` is a hardcoded per-provider constant; if a provider starts or
+  stops accepting `reasoning_effort`, the table must be updated (the 400/422
+  one-shot retry is a safety net, not a substitute).
+- 400/404/422 "next model" can mask a genuinely malformed request by trying
+  every model before failing, trading latency for resilience.
+- Daily-cap state is not persisted: a capped key is re-probed once per run per
+  provider (fast, because `is_key_cap` breaks immediately, but it is a request).
+- The mandated workflow env exposes only `GROQ_API_KEY_2` (not
+  `GEMINI_API_KEY_2`); the script still uses `GEMINI_API_KEY_2` if the runner
+  supplies it, so gemini key rotation is inert until that secret is wired in.
+- Dropping the global `MODEL` pin means a silent upstream model change affects
+  every role at once; per-provider `*_MODELS` overrides are the mitigation.
+
+
