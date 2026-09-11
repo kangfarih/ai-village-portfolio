@@ -5,7 +5,7 @@
 # Posts a chat-completion request through an ordered chain of OpenAI-compatible
 # providers:
 #
-#   openrouter -> gemini -> groq -> cline -> ollama      (override with LLM_PROVIDER_ORDER)
+#   openrouter -> gemini -> groq -> huggingface -> ollama      (override with LLM_PROVIDER_ORDER)
 #
 # Every endpoint speaks the OpenAI wire format (`Authorization: Bearer` +
 # POST /chat/completions). Within one provider the API keys are tried in order;
@@ -25,16 +25,16 @@
 #                        is key-scoped)
 #   GEMINI_API_KEY       gemini bearer token
 #   GROQ_API_KEY         groq bearer token; never logged
-#   CLINE_API_KEY        cline bearer token
+#   HF_API_KEY         huggingface bearer token (free/prepaid tier)
 #   OLLAMA_API_KEY       ollama bearer token
-#   OPENROUTER_ENDPOINT / GEMINI_ENDPOINT / GROQ_ENDPOINT / CLINE_ENDPOINT /
+#   OPENROUTER_ENDPOINT / GEMINI_ENDPOINT / GROQ_ENDPOINT / HF_ENDPOINT /
 #   OLLAMA_ENDPOINT
 #                        override the provider endpoint (defaults below)
-#   OPENROUTER_MODELS / GEMINI_MODELS / GROQ_MODELS / CLINE_MODELS /
+#   OPENROUTER_MODELS / GEMINI_MODELS / GROQ_MODELS / HF_MODELS /
 #   OLLAMA_MODELS
 #                        space-separated model list; overrides the default
 #   LLM_PROVIDER_ORDER   space/comma-separated subset/reorder of
-#                        "openrouter gemini groq cline ollama"
+#                        "openrouter gemini groq huggingface ollama"
 #                        (default: all, that order)
 #   LLM_MAX_ATTEMPTS     default 3
 #   LLM_BACKOFF          default "5 15 45" seconds, indexed by attempt
@@ -42,7 +42,7 @@
 #                        --effort and an empty value disables reasoning_effort
 #
 # reasoning_effort is sent ONLY when the resolved effort is non-empty AND the
-# active provider supports it (groq does; openrouter/gemini/cline/ollama do
+# active provider supports it (groq does; openrouter/gemini/huggingface/ollama do
 # not). If a provider rejects the parameter with HTTP 400/422 whose message
 # mentions `reasoning_effort`, the same (provider,key,model) is retried once
 # without it.
@@ -136,7 +136,7 @@ PROVIDER_SPECS=(
   "openrouter|OPENROUTER_ENDPOINT|https://openrouter.ai/api/v1/chat/completions|OPENROUTER_API_KEY|OPENROUTER_MODELS|nex-agi/nex-n2.5-mini:free|false"
   "gemini|GEMINI_ENDPOINT|https://generativelanguage.googleapis.com/v1beta/openai/chat/completions|GEMINI_API_KEY|GEMINI_MODELS|gemini-3.5-flash-lite gemini-3.1-flash-lite gemini-3-flash-preview|false"
   "groq|GROQ_ENDPOINT|https://api.groq.com/openai/v1/chat/completions|GROQ_API_KEY|GROQ_MODELS|openai/gpt-oss-20b qwen/qwen3.6-27b groq/compound-mini|true"
-  "cline|CLINE_ENDPOINT|https://api.cline.bot/api/v1/chat/completions|CLINE_API_KEY|CLINE_MODELS|openrouter/free|false"
+  "huggingface|HF_ENDPOINT|https://huggingface.co/api/inference/chat/completions|HF_API_KEY|HF_MODELS|openbmb/MiniCPM5-2B XHToken/Spark-X2.5-4B|false"
   "ollama|OLLAMA_ENDPOINT|https://ollama.com/v1/chat/completions|OLLAMA_API_KEY|OLLAMA_MODELS|gpt-oss:20b gpt-oss:120b|false"
 )
 
@@ -165,7 +165,7 @@ provider_field() {
 # Resolve the active provider order: default all five; LLM_PROVIDER_ORDER may
 # be space- or comma-separated, is a subset/reorder, and unknown names are
 # ignored with a warning.
-ORDER_RAW="${LLM_PROVIDER_ORDER:-openrouter gemini groq cline ollama}"
+ORDER_RAW="${LLM_PROVIDER_ORDER:-openrouter gemini groq huggingface ollama}"
 ORDER_RAW="${ORDER_RAW//,/ }"
 read -r -a ORDER_TOKENS <<< "$ORDER_RAW"
 ACTIVE_PROVIDERS=()
@@ -202,7 +202,7 @@ for _p in "${ACTIVE_PROVIDERS[@]}"; do
   done
 done
 unset _p _keys_env _kv
-[ "$ANY_KEY" = "true" ] || fail "no API key configured (set OPENROUTER_API_KEY / GEMINI_API_KEY / GROQ_API_KEY / CLINE_API_KEY / OLLAMA_API_KEY)"
+[ "$ANY_KEY" = "true" ] || fail "no API key configured (set OPENROUTER_API_KEY / GEMINI_API_KEY / GROQ_API_KEY / HF_API_KEY / OLLAMA_API_KEY)"
 
 # Build the request body. $1 = model, $2 = SEND_EFFORT ("true"/"false"),
 # $3 = assistant raw content ("" on the first call), $4 = correction

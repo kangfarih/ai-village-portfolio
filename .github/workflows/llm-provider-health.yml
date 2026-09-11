@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        provider: [openrouter, gemini, groq, cline, ollama]
+        provider: [openrouter, gemini, groq, huggingface, ollama]
 
     steps:
       - uses: actions/checkout@v4
@@ -24,7 +24,7 @@ jobs:
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          CLINE_API_KEY: ${{ secrets.CLINE_API_KEY }}
+          HF_API_KEY: ${{ secrets.HF_API_KEY }}
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PROVIDER: ${{ matrix.provider }}
@@ -48,9 +48,9 @@ jobs:
               ENDPOINT="${GROQ_ENDPOINT:-https://api.groq.com/openai/v1/chat/completions}"
               MODELS="${GROQ_MODELS:-openai/gpt-oss-20b}"
               ;;
-            cline)
-              ENDPOINT="${CLINE_ENDPOINT:-https://api.cline.bot/api/v1/chat/completions}"
-              MODELS="${CLINE_MODELS:-openrouter/free}"
+            huggingface)
+              ENDPOINT="${HF_ENDPOINT:-https://huggingface.co/api/inference/chat/completions}"
+              MODELS="${HF_MODELS:-openbmb/MiniCPM5-2B}"
               ;;
             ollama)
               ENDPOINT="${OLLAMA_ENDPOINT:-https://ollama.com/v1/chat/completions}"
