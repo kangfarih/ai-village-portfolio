@@ -2451,7 +2451,7 @@ falling through models within a key:
 
 | Order | Provider | Endpoint (default) | Key env vars (in order) | Models (try in order) | `reasoning_effort` |
 |---|---|---|---|---|---|
-| 1 | `groq` | `https://api.groq.com/openai/v1/chat/completions` | `GROQ_API_KEY`, `GROQ_API_KEY_2` | `openai/gpt-oss-20b`, `qwen/qwen3.6-27b`, `groq/compound-mini` | yes |
+| 1 | `groq` | `https://api.groq.com/openai/v1/chat/completions` | `GROQ_API_KEY` | `openai/gpt-oss-20b`, `qwen/qwen3.6-27b`, `groq/compound-mini` | yes |
 | 2 | `gemini` | `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions` | `GEMINI_API_KEY`, `GEMINI_API_KEY_2` | `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview` | no |
 | 3 | `cline` | `https://api.cline.bot/api/v1/chat/completions` | `CLINE_API_KEY` | `openrouter/free` | no |
 | 4 | `ollama` | `https://ollama.com/v1/chat/completions` | `OLLAMA_API_KEY` | `gpt-oss:20b`, `gpt-oss:120b` | no |
@@ -2498,7 +2498,7 @@ The 5 role workflows (`agent-triage`, `agent-orchestrate`, `agent-techlead`,
 `agent-programmer`, `agent-review`) dropped `OPENROUTER_API_KEY[_2.._5]` and the
 `MODEL: ${{ vars.MODEL || ... }}` line in favour of the 5 provider secrets, and
 their pre-flight guards now test
-`GROQ_API_KEY`/`GROQ_API_KEY_2`/`GEMINI_API_KEY`/`CLINE_API_KEY`/`OLLAMA_API_KEY`.
+`GROQ_API_KEY`/`GEMINI_API_KEY`/`CLINE_API_KEY`/`OLLAMA_API_KEY`.
 `agent-triage` has no guard (it never fails); the other four keep their
 role-specific comment and `exit 1`.
 
@@ -2562,10 +2562,14 @@ one-shot retry for the models that do reject it.
   every model before failing, trading latency for resilience.
 - Daily-cap state is not persisted: a capped key is re-probed once per run per
   provider (fast, because `is_key_cap` breaks immediately, but it is a request).
-- The mandated workflow env exposes only `GROQ_API_KEY_2` (not
-  `GEMINI_API_KEY_2`); the script still uses `GEMINI_API_KEY_2` if the runner
-  supplies it, so gemini key rotation is inert until that secret is wired in.
+- The workflow env wires single keys (`GROQ_API_KEY`, `GEMINI_API_KEY`);
+  `GROQ_API_KEY_2` was dropped at the user's request (groq now uses one key) and
+  the script no longer reads it. `GEMINI_API_KEY_2` is still supported by the
+  script if the runner supplies it, so gemini key rotation is inert until that
+  secret is wired in.
 - Dropping the global `MODEL` pin means a silent upstream model change affects
   every role at once; per-provider `*_MODELS` overrides are the mitigation.
+- Follow-up: `GROQ_API_KEY_2` was removed from `llm_json.sh` and the 5 workflow
+  envs/guards at the user's request; groq now uses a single key.
 
 

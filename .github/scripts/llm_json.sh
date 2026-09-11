@@ -127,7 +127,7 @@ read -r -a BACKOFF_ARR <<< "$BACKOFF"
 # Ordered providers:
 #   name|endpoint_env|endpoint_default|keys_env|models_env|models_default|supports_effort
 PROVIDER_SPECS=(
-  "groq|GROQ_ENDPOINT|https://api.groq.com/openai/v1/chat/completions|GROQ_API_KEY GROQ_API_KEY_2|GROQ_MODELS|openai/gpt-oss-20b qwen/qwen3.6-27b groq/compound-mini|true"
+  "groq|GROQ_ENDPOINT|https://api.groq.com/openai/v1/chat/completions|GROQ_API_KEY|GROQ_MODELS|openai/gpt-oss-20b qwen/qwen3.6-27b groq/compound-mini|true"
   "gemini|GEMINI_ENDPOINT|https://generativelanguage.googleapis.com/v1beta/openai/chat/completions|GEMINI_API_KEY GEMINI_API_KEY_2|GEMINI_MODELS|gemini-3.5-flash-lite gemini-3.1-flash-lite gemini-3-flash-preview|false"
   "cline|CLINE_ENDPOINT|https://api.cline.bot/api/v1/chat/completions|CLINE_API_KEY|CLINE_MODELS|openrouter/free|false"
   "ollama|OLLAMA_ENDPOINT|https://ollama.com/v1/chat/completions|OLLAMA_API_KEY|OLLAMA_MODELS|gpt-oss:20b gpt-oss:120b|false"

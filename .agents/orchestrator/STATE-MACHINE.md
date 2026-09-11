@@ -38,7 +38,7 @@ only when the resolved effort is non-empty.
 
 | Order | Provider | Endpoint (default) | Key env vars (in order) | Models (try in order) | `reasoning_effort` |
 |---|---|---|---|---|---|
-| 1 | `groq` | `https://api.groq.com/openai/v1/chat/completions` | `GROQ_API_KEY`, `GROQ_API_KEY_2` | `openai/gpt-oss-20b`, `qwen/qwen3.6-27b`, `groq/compound-mini` | yes |
+| 1 | `groq` | `https://api.groq.com/openai/v1/chat/completions` | `GROQ_API_KEY` | `openai/gpt-oss-20b`, `qwen/qwen3.6-27b`, `groq/compound-mini` | yes |
 | 2 | `gemini` | `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions` | `GEMINI_API_KEY`, `GEMINI_API_KEY_2` | `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview` | no |
 | 3 | `cline` | `https://api.cline.bot/api/v1/chat/completions` | `CLINE_API_KEY` | `openrouter/free` | no |
 | 4 | `ollama` | `https://ollama.com/v1/chat/completions` | `OLLAMA_API_KEY` | `gpt-oss:20b`, `gpt-oss:120b` | no |
