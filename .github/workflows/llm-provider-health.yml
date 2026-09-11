@@ -49,7 +49,7 @@ jobs:
               MODELS="${GROQ_MODELS:-openai/gpt-oss-20b}"
               ;;
             huggingface)
-              ENDPOINT="${HF_ENDPOINT:-https://huggingface.co/api/inference/chat/completions}"
+              ENDPOINT="${HF_ENDPOINT:-https://huggingface.co/chat/completions}"
               MODELS="${HF_MODELS:-openbmb/MiniCPM5-2B}"
               ;;
             ollama)

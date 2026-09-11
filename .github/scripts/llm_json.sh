@@ -136,7 +136,7 @@ PROVIDER_SPECS=(
   "openrouter|OPENROUTER_ENDPOINT|https://openrouter.ai/api/v1/chat/completions|OPENROUTER_API_KEY|OPENROUTER_MODELS|nex-agi/nex-n2.5-mini:free|false"
   "gemini|GEMINI_ENDPOINT|https://generativelanguage.googleapis.com/v1beta/openai/chat/completions|GEMINI_API_KEY|GEMINI_MODELS|gemini-3.5-flash-lite gemini-3.1-flash-lite gemini-3-flash-preview|false"
   "groq|GROQ_ENDPOINT|https://api.groq.com/openai/v1/chat/completions|GROQ_API_KEY|GROQ_MODELS|openai/gpt-oss-20b qwen/qwen3.6-27b groq/compound-mini|true"
-  "huggingface|HF_ENDPOINT|https://huggingface.co/api/inference/chat/completions|HF_API_KEY|HF_MODELS|openbmb/MiniCPM5-2B XHToken/Spark-X2.5-4B|false"
+  "huggingface|HF_ENDPOINT|https://huggingface.co/chat/completions|HF_API_KEY|HF_MODELS|openbmb/MiniCPM5-2B XHToken/Spark-X2.5-4B|false"
   "ollama|OLLAMA_ENDPOINT|https://ollama.com/v1/chat/completions|OLLAMA_API_KEY|OLLAMA_MODELS|gpt-oss:20b gpt-oss:120b|false"
 )
 
