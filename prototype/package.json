@@ -1,0 +1,19 @@
+{
+  "name": "portfolio-pixi-prototype",
+  "version": "1.0.0",
+  "description": "PixiJS and TypeScript portfolio prototype using Tiny RPG assets",
+  "main": "src/main.ts",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "pixi.js": "^7.4.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3",
+    "vite": "^5.0.12"
+  }
+}
+
