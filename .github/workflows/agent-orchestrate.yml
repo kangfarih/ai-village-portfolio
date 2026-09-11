@@ -70,12 +70,12 @@ jobs:
           git config user.name "github-workflow-agent"
           git config user.email "agent@users.noreply.github.com"
 
-      # Agent is now pure GitHub workflow agent; model = thinkingmachines/inkling:free.
+      # Agent is now pure GitHub workflow agent; LLM via .github/scripts/llm_json.sh provider chain.
       # No external action; native bash/comment steps only.
       - name: Document pure GitHub workflow agent
         run: |
           echo "Agent: pure GitHub workflow agent"
-          echo "Model: thinkingmachines/inkling:free"
+          echo "LLM: multi-provider chain via llm_json.sh (groq -> gemini -> cline -> ollama -> openrouter -> opencode)"
 
       - name: Idempotency check
         id: guard
@@ -455,7 +455,7 @@ jobs:
                 printf '\n> Note (N1): the model proposed %s goals; only the first 6 after dedupe were delegated.\n' "$RAW_COUNT"
               fi
               printf 'Agents never merge to `dev` (or `main`).\n'
-              printf '\nAgent: pure GitHub workflow agent | Model: thinkingmachines/inkling:free\n'
+              printf '\nAgent: pure GitHub workflow agent | LLM: multi-provider chain (llm_json.sh)\n'
             } | gh issue comment "$ISSUE_NUMBER" --body-file -
           else
             echo "orchestrator marker already present; skipping summary comment"

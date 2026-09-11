@@ -38,12 +38,12 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      # Agent is now pure GitHub workflow agent; model = thinkingmachines/inkling:free.
+      # Agent is now pure GitHub workflow agent; LLM via .github/scripts/llm_json.sh provider chain.
       # No external action; native bash/comment steps only.
       - name: Document pure GitHub workflow agent
         run: |
           echo "Agent: pure GitHub workflow agent"
-          echo "Model: thinkingmachines/inkling:free"
+          echo "LLM: multi-provider chain via llm_json.sh (groq -> gemini -> cline -> ollama -> openrouter -> opencode)"
 
       # LLM-classify the issue `kind`. Triage must NEVER break: any failure
       # (missing/invalid key, non-200, bad JSON) falls back to `task`. The key
@@ -147,7 +147,7 @@ jobs:
           esac
           echo "Posting triage comment for issue #${ISSUE_NUMBER}: ${ISSUE_TITLE}"
           SUMMARY="This issue requires triage and prioritization. It has been labeled accordingly and is ready for review. The description outlines the problem clearly, and the criteria for resolution are specified. Dependencies and reproducibility need verification before proceeding."
-          printf '%s\n' "${SUMMARY}" "" "Classified kind: ${KIND}" "" "DoR Checklist:" "- Description: clearly stated" "- Criteria: defined" "- Dependencies: identified" "- Priority: set" "- Reproducible: needs verification" "" "Agent: pure GitHub workflow agent | Model: thinkingmachines/inkling:free" "" "Do NOT open PRs. Do NOT push. Do NOT merge." | gh issue comment "${ISSUE_NUMBER}" --body-file -
+          printf '%s\n' "${SUMMARY}" "" "Classified kind: ${KIND}" "" "DoR Checklist:" "- Description: clearly stated" "- Criteria: defined" "- Dependencies: identified" "- Priority: set" "- Reproducible: needs verification" "" "Agent: pure GitHub workflow agent | LLM: multi-provider chain (llm_json.sh)" "" "Do NOT open PRs. Do NOT push. Do NOT merge." | gh issue comment "${ISSUE_NUMBER}" --body-file -
 
       # Hand the issue to the orchestrator. Label-only chaining is dead
       # (`GITHUB_TOKEN`-created label events do not start new runs), so the

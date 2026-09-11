@@ -41,11 +41,11 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      # Agent is now pure GitHub workflow agent; model = thinkingmachines/inkling:free.
+      # Agent is now pure GitHub workflow agent; LLM via .github/scripts/llm_json.sh provider chain.
       - name: Document pure GitHub workflow agent
         run: |
           echo "Agent: pure GitHub workflow agent"
-          echo "Model: thinkingmachines/inkling:free"
+          echo "LLM: multi-provider chain via llm_json.sh (groq -> gemini -> cline -> ollama -> openrouter -> opencode)"
 
       - name: Ensure tech-lead labels exist
         env:
@@ -165,7 +165,7 @@ jobs:
             printf '%s' "$SPEC" | jq -r '.files[]? | "- `" + (. | tostring) + "`"'
             printf '\n### Acceptance\n\n'
             printf '%s' "$SPEC" | jq -r '.acceptance[]? | "- [ ] " + (. | tostring)'
-            printf '\n---\n\nAgent: pure GitHub workflow agent | Model: thinkingmachines/inkling:free\n'
+            printf '\n---\n\nAgent: pure GitHub workflow agent | LLM: multi-provider chain (llm_json.sh)\n'
           } > /tmp/tl_comment.md
           gh issue comment "$ISSUE_NUMBER" --body-file /tmp/tl_comment.md
 

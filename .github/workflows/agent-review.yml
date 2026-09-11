@@ -56,11 +56,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      # Agent is now pure GitHub workflow agent; model = thinkingmachines/inkling:free.
+      # Agent is now pure GitHub workflow agent; LLM via .github/scripts/llm_json.sh provider chain.
       - name: Document pure GitHub workflow agent
         run: |
           echo "Agent: pure GitHub workflow agent"
-          echo "Model: thinkingmachines/inkling:free"
+          echo "LLM: multi-provider chain via llm_json.sh (groq -> gemini -> cline -> ollama -> openrouter -> opencode)"
 
       - name: Ensure review labels exist
         env:
@@ -317,7 +317,7 @@ jobs:
               printf '%s' "$VERDICT_JSON" | jq -r '.missing[]? | "- " + (. | tostring)'
               printf '\n**Guidance:** %s\n\n' "$GUIDANCE"
               printf '%s\n' '> done = the deliverable satisfies every acceptance item; revise = it does not (the `missing` list names the specific unmet item).'
-              printf '\nAgent: pure GitHub workflow agent | Model: thinkingmachines/inkling:free\n'
+              printf '\nAgent: pure GitHub workflow agent | LLM: multi-provider chain (llm_json.sh)\n'
             } > /tmp/verdict_comment.md
             gh issue comment "$ISSUE_NUMBER" --body-file /tmp/verdict_comment.md
           fi
@@ -430,7 +430,7 @@ jobs:
                     printf 'Human review required; the agent will not merge. Do not merge until reviewed.\n'
                     printf 'Agents never merge and never push `dev`/`main`.\n\n'
                     printf 'Parent status: `status:done`. This issue is NOT auto-closed - a human closes it.\n\n'
-                    printf 'Agent: pure GitHub workflow agent | Model: thinkingmachines/inkling:free\n'
+                    printf 'Agent: pure GitHub workflow agent | LLM: multi-provider chain (llm_json.sh)\n'
                   } | gh issue comment "$PARENT_NUMBER" --body-file -
                 else
                   echo "parent #${PARENT_NUMBER} was finalized by a racing review; not posting a duplicate"

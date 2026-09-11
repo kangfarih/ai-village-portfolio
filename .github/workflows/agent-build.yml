@@ -5,8 +5,10 @@ permissions: {}
 
 # TL + programmer trial (PLAN 01: /approve -> session branch -> PR -> dev).
 # Fires when a maintainer comments `/approve` on an OPEN issue (not a PR).
-# Model chain (priority order): primary thinkingmachines/inkling:free,
-# fallback overrides thinkingmachines/inkling:free (no external action).
+# LLM: multi-provider chain via .github/scripts/llm_json.sh
+# (groq -> gemini -> cline -> ollama -> openrouter -> opencode).
+# The `model` input below is an informational label only; LLM calls go through
+# the chain (see also Go console "Use balance" toggle in trial NOTES).
 # Workflow-level fallback: if the primary-model limit is hit, a maintainer
 # re-runs via `workflow_dispatch` overriding `model` with the next model in
 # the chain (see also Go console "Use balance" toggle in trial NOTES).
@@ -22,8 +24,8 @@ on:
         description: "Issue number to build (fallback re-run)"
         required: true
       model:
-        description: "Model override (fallback: thinkingmachines/inkling:free)"
-        default: "thinkingmachines/inkling:free"
+        description: "Informational model label (LLM calls use the llm_json.sh provider chain)"
+        default: "llm-chain (llm_json.sh)"
         required: false
 
 jobs:
@@ -72,19 +74,19 @@ jobs:
       - run: git config user.name "github-workflow-agent" && git config user.email "agent@users.noreply.github.com"
         name: Set agent git identity
 
-      # Agent is now pure GitHub workflow agent; model = thinkingmachines/inkling:free.
+      # Agent is now pure GitHub workflow agent; LLM via .github/scripts/llm_json.sh provider chain.
       # No external action; native bash/comment steps only.
       - name: Document pure GitHub workflow agent
         run: |
           echo "Agent: pure GitHub workflow agent"
-          echo "Model: thinkingmachines/inkling:free"
+          echo "LLM: multi-provider chain via llm_json.sh (groq -> gemini -> cline -> ollama -> openrouter -> opencode)"
 
       # Native bash step: approve/build (read-only on product code, pushes session/* branch).
       - name: Build session branch (native bash)
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
-          MODEL: ${{ inputs.model || 'thinkingmachines/inkling:free' }}
+          MODEL: ${{ inputs.model || 'llm-chain (llm_json.sh)' }}
         run: |
           echo "/approve for issue #${ISSUE_NUMBER}"
-          echo "Model: ${MODEL}"
+          echo "LLM: ${MODEL}"
           echo "Cut branch session/* from fresh origin/dev; open PR to dev; never merge."
