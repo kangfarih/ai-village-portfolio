@@ -6,7 +6,7 @@ permissions: {}
 # TL + programmer trial (PLAN 01: /approve -> session branch -> PR -> dev).
 # Fires when a maintainer comments `/approve` on an OPEN issue (not a PR).
 # LLM: multi-provider chain via .github/scripts/llm_json.sh
-# (groq -> gemini -> cline -> ollama -> openrouter -> opencode).
+# (openrouter -> gemini -> groq -> cline -> ollama).
 # The `model` input below is an informational label only; LLM calls go through
 # the chain (see also Go console "Use balance" toggle in trial NOTES).
 # Workflow-level fallback: if the primary-model limit is hit, a maintainer
@@ -79,7 +79,7 @@ jobs:
       - name: Document pure GitHub workflow agent
         run: |
           echo "Agent: pure GitHub workflow agent"
-          echo "LLM: multi-provider chain via llm_json.sh (groq -> gemini -> cline -> ollama -> openrouter -> opencode)"
+          echo "LLM: multi-provider chain via llm_json.sh (openrouter -> gemini -> groq -> cline -> ollama)"
 
       # Native bash step: approve/build (read-only on product code, pushes session/* branch).
       - name: Build session branch (native bash)

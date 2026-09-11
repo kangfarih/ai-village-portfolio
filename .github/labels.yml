@@ -3,7 +3,7 @@
 # Colors are hex without leading `#`.
 - name: ai-triage
   color: "0E8A16"
-  description: "Opt-in to opencode triage"
+  description: "Opt-in to issue triage"
 - name: "type: feature"
   color: "1D76DB"
   description: "New feature request (see feature.yml)"

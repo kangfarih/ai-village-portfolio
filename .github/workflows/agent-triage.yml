@@ -43,7 +43,7 @@ jobs:
       - name: Document pure GitHub workflow agent
         run: |
           echo "Agent: pure GitHub workflow agent"
-          echo "LLM: multi-provider chain via llm_json.sh (groq -> gemini -> cline -> ollama -> openrouter -> opencode)"
+          echo "LLM: multi-provider chain via llm_json.sh (openrouter -> gemini -> groq -> cline -> ollama)"
 
       # LLM-classify the issue `kind`. Triage must NEVER break: any failure
       # (missing/invalid key, non-200, bad JSON) falls back to `task`. The key
@@ -58,11 +58,6 @@ jobs:
           CLINE_API_KEY: ${{ secrets.CLINE_API_KEY }}
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          OPENROUTER_API_KEY_2: ${{ secrets.OPENROUTER_API_KEY_2 }}
-          OPENROUTER_API_KEY_3: ${{ secrets.OPENROUTER_API_KEY_3 }}
-          OPENROUTER_API_KEY_4: ${{ secrets.OPENROUTER_API_KEY_4 }}
-          OPENROUTER_API_KEY_5: ${{ secrets.OPENROUTER_API_KEY_5 }}
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         run: |
           set -euo pipefail
           KIND=task

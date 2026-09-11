@@ -53,7 +53,7 @@ jobs:
       - name: Document pure GitHub workflow agent
         run: |
           echo "Agent: pure GitHub workflow agent"
-          echo "LLM: multi-provider chain via llm_json.sh (groq -> gemini -> cline -> ollama -> openrouter -> opencode)"
+          echo "LLM: multi-provider chain via llm_json.sh (openrouter -> gemini -> groq -> cline -> ollama)"
 
       - name: Ensure programmer labels exist
         env:
@@ -68,16 +68,11 @@ jobs:
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           CLINE_API_KEY: ${{ secrets.CLINE_API_KEY }}
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          OPENROUTER_API_KEY_2: ${{ secrets.OPENROUTER_API_KEY_2 }}
-          OPENROUTER_API_KEY_3: ${{ secrets.OPENROUTER_API_KEY_3 }}
-          OPENROUTER_API_KEY_4: ${{ secrets.OPENROUTER_API_KEY_4 }}
-          OPENROUTER_API_KEY_5: ${{ secrets.OPENROUTER_API_KEY_5 }}
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           # Complete file contents need a large completion budget; the helper's
           # 1500 default truncates real changesets. Override with the repo
           # variable PROGRAMMER_MAX_TOKENS if a bigger budget is needed.
@@ -156,9 +151,9 @@ jobs:
             exit 0
           fi
 
-          if [ -z "${GROQ_API_KEY:-}${GEMINI_API_KEY:-}${CLINE_API_KEY:-}${OLLAMA_API_KEY:-}${OPENROUTER_API_KEY:-}${OPENCODE_API_KEY:-}" ]; then
-            fail_human "**Programmer cannot run:** no LLM provider key is configured (\`GROQ_API_KEY\` / \`GEMINI_API_KEY\` / \`CLINE_API_KEY\` / \`OLLAMA_API_KEY\` / \`OPENROUTER_API_KEY\` / \`OPENCODE_API_KEY\`). Add a secret, then re-run by re-applying \`goal/ready\`. The goal was moved to \`needs-human\`."
-            echo "::error::no LLM provider key is configured (GROQ_API_KEY / GEMINI_API_KEY / CLINE_API_KEY / OLLAMA_API_KEY / OPENROUTER_API_KEY / OPENCODE_API_KEY)"
+          if [ -z "${OPENROUTER_API_KEY:-}${GEMINI_API_KEY:-}${GROQ_API_KEY:-}${CLINE_API_KEY:-}${OLLAMA_API_KEY:-}" ]; then
+            fail_human "**Programmer cannot run:** no LLM provider key is configured (openrouter, gemini, groq, cline, ollama). Add a secret, then re-run by re-applying \`goal/ready\`. The goal was moved to \`needs-human\`."
+            echo "::error::no LLM provider key is configured (openrouter, gemini, groq, cline, ollama)"
             exit 1
           fi
 

@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       key_name:
-        description: 'Name/label for the key (e.g. openai, anthropic, opencode)'
+        description: 'Name/label for the key (e.g. openai, anthropic, openrouter)'
         required: true
-        default: opencode
+        default: openrouter
       api_key:
         description: 'The API key value to test'
         required: true

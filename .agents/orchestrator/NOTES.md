@@ -1,5 +1,13 @@
 # orchestrator v1 — NOTES
 
+> **Current config (2026-09-11).** LLM fallback chain:
+> `openrouter -> gemini -> groq -> cline -> ollama`, one key per service
+> (`OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `CLINE_API_KEY`,
+> `OLLAMA_API_KEY`). OpenCode Zen and every numbered `*_KEY_2.._5` key are
+> **removed**. Everything below is a chronological implementation log; the final
+> `2026-09-11 — Single-key-per-service fallback chain` section is the current
+> description and supersedes any conflicting earlier entry.
+
 First real agentic layer: `agent-orchestrate` workflow breaks an issue labeled
 `ai-orchestrate` into 3–6 concrete goals via LLM, creates one `ai-goal`
 sub-issue per goal, posts a single summary comment on the parent, and adds
@@ -171,15 +179,20 @@ refactor, so later role workflows share one contract.
   `--add-label triage/accepted`. No push/PR/merge steps.
 - `.agents/orchestrator/NOTES.md` (this file).
 
-## Helper flags / env (`llm_json.sh`)
+## Helper flags / env (`llm_json.sh`) — (superseded 2026-09-11)
+
+> **Superseded 2026-09-11.** The env list below described the original
+> single-OpenRouter helper. Current config is the five-service single-key chain
+> `openrouter gemini groq cline ollama`; see the final
+> `2026-09-11 — Single-key-per-service fallback chain` section.
 
 - Usage: `--system-file SYS --user-file USER --out OUT --schema '<JQ_BOOL_FILTER>'
   [--effort low|medium|high] [--max-tokens N]` (default 1500).
-- Env: `OPENCODE_API_KEY` (required), `MODEL`
-  (default `thinkingmachines/inkling:free`), `OPENROUTER_ENDPOINT`
-  (default `https://openrouter.ai/api/v1/chat/completions`), `LLM_MAX_ATTEMPTS`
+- Env: provider keys `OPENROUTER_API_KEY` / `GEMINI_API_KEY` / `GROQ_API_KEY` /
+  `CLINE_API_KEY` / `OLLAMA_API_KEY` (single key per provider, tried in the
+  order above), per-provider endpoints via `*_ENDPOINT`, `LLM_MAX_ATTEMPTS`
   (default `3`), `LLM_BACKOFF` (default `"5 15 45"`, ±20% jitter, `Retry-After`
-  wins when numeric and is capped at 60s).
+  wins when numeric and is capped at 60s). The old `MODEL` pin is gone.
 - Effort: `--effort` is honored when `LLM_REASONING_EFFORT` is **unset**; if
   `LLM_REASONING_EFFORT` is set (even to `""`) it wins, and an empty value omits
   `reasoning_effort` from the request entirely. So `LLM_REASONING_EFFORT=""`
@@ -188,10 +201,14 @@ refactor, so later role workflows share one contract.
   other path prints an `::error ::` diagnostic (HTTP code / attempt / reason) to
   stderr and exits 1.
 
-## Fallback removed → loud failure
+## Fallback removed → loud failure — (superseded 2026-09-11)
 
-- `OPENCODE_API_KEY` empty → the workflow comments that the key is not
-  configured, then `exit 1`. No silent substitution.
+> **Superseded 2026-09-11.** This described the original single-OpenRouter gate.
+> Current config uses the five-service single-key chain
+> `openrouter gemini groq cline ollama`; see the final section.
+
+- `OPENROUTER_API_KEY` empty (all providers keyless) → the workflow comments that
+  no provider key is configured, then `exit 1`. No silent substitution.
 - Helper non-zero exit (transport exhausted, non-retryable HTTP, or schema
   invalid after the one correction) → the workflow comments that the orchestrator
   LLM failed after retries and the label can be re-applied, then `exit 1`.
@@ -2442,7 +2459,13 @@ marker, so pre-hardening children (no marker) are never fuzzy candidates.
 
 ---
 
-## Multi-provider LLM fallback (groq -> gemini -> cline -> ollama)
+## Multi-provider LLM fallback (groq -> gemini -> cline -> ollama) — (superseded 2026-09-11)
+
+> **Superseded 2026-09-11 — historical record.** This section documents the
+> four-provider intermediate state. Current config is the five-service
+> single-key chain `openrouter gemini groq cline ollama`; see the final
+> `2026-09-11 — Single-key-per-service fallback chain` section. The
+> `GEMINI_API_KEY_2` mention below is likewise historical.
 
 **What changed.** `.github/scripts/llm_json.sh` no longer talks to a single
 OpenRouter endpoint with a repo-variable `MODEL` pin. It now walks an ordered
@@ -2574,7 +2597,14 @@ one-shot retry for the models that do reject it.
 
 ---
 
-## Re-added OpenRouter + OpenCode providers
+## Re-added OpenRouter + OpenCode providers — (superseded 2026-09-11)
+
+> **Superseded 2026-09-11 — historical record.** The `opencode` provider and the
+> `OPENROUTER_API_KEY_2.._5` rotation keys were both dropped. Current config is
+> the five-service single-key chain `openrouter gemini groq cline ollama`; see
+> the final `2026-09-11 — Single-key-per-service fallback chain` section. Every
+> `OPENCODE_API_KEY` / `OPENROUTER_API_KEY_2.._5` mention in this section is
+> historical.
 
 **What changed (exactly 8 files).** The multi-provider fallback chain gained two
 providers — `openrouter` and `opencode` — after `ollama`. Public provider order
@@ -2695,5 +2725,78 @@ is now `groq -> gemini -> cline -> ollama -> openrouter -> opencode`.
   visible in the process argument list on the runner (pre-existing property of
   the shared client, not introduced here).
 
+---
 
+## 2026-09-11 — Single-key-per-service fallback chain (openrouter → gemini → groq → cline → ollama)
+
+**What changed.** The LLM fallback chain is now five **distinct services**, each
+with a **single** key, in this order:
+
+| Order | Provider | Endpoint (default) | Key env var | Models (try in order) | `reasoning_effort` |
+|---|---|---|---|---|---|
+| 1 | `openrouter` | `https://openrouter.ai/api/v1/chat/completions` | `OPENROUTER_API_KEY` | `nex-agi/nex-n2.5-mini:free` | no |
+| 2 | `gemini` | `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions` | `GEMINI_API_KEY` | `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview` | no |
+| 3 | `groq` | `https://api.groq.com/openai/v1/chat/completions` | `GROQ_API_KEY` | `openai/gpt-oss-20b`, `qwen/qwen3.6-27b`, `groq/compound-mini` | yes |
+| 4 | `cline` | `https://api.cline.bot/api/v1/chat/completions` | `CLINE_API_KEY` | `openrouter/free` | no |
+| 5 | `ollama` | `https://ollama.com/v1/chat/completions` | `OLLAMA_API_KEY` | `gpt-oss:20b`, `gpt-oss:120b` | no |
+
+**New default order:** `openrouter gemini groq cline ollama`
+(`openrouter -> gemini -> groq -> cline -> ollama`). `supports_effort` is still
+`true` for `groq` only.
+
+**Removed.**
+
+- `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2` … `OPENROUTER_API_KEY_5` → the
+  single `OPENROUTER_API_KEY`. The `_2.._5` entries were **five rotation keys
+  for ONE provider** (OpenRouter), not different services: they shared the same
+  endpoint, the same free-tier quota, and the same daily cap, so a quota/outage
+  at OpenRouter took all five out together. Rotation is gone; OpenRouter now
+  uses one key.
+- `GEMINI_API_KEY_2` — removed. It was **inert / never wired into any workflow
+  env**, so the script's key-rotation path for gemini could never fire (the
+  runner never supplied a second key). Dead config.
+- `opencode` / `OPENCODE_API_KEY` (**OpenCode Zen**) — **dropped entirely**. Its
+  free models were rejected with **HTTP 400** for non-OpenCode clients, so the
+  provider never succeeded and only added end-of-chain latency. The `opencode`
+  row, `OPENCODE_ENDPOINT`/`OPENCODE_MODELS`, and the OpenCode caveat are gone.
+
+**Rationale.** Multiple **distinct services** provide more independent failure
+domains than multiple keys of one service: an outage, quota exhaustion, or a
+model deprecation at one provider leaves the other four untouched, whereas extra
+keys of the same provider share its fate. It also simplifies the env surface
+from eight-or-so secrets to five (one per service) and removes a provider that
+could never pass.
+
+**Files changed.**
+
+- `.github/scripts/llm_json.sh` — `PROVIDER_SPECS` / default `ORDER_RAW`
+  collapsed to the five single-key services (owned/verified by the `.github`
+  change; not edited in this docs task).
+- `.github/workflows/agent-{triage,orchestrate,techlead,programmer,review}.yml`
+  — env/guards now name only the five single-key providers (same ownership
+  note).
+- `.agents/orchestrator/STATE-MACHINE.md` — §1 provider table and the
+  endpoint/model override lists now show exactly
+  `openrouter, gemini, groq, cline, ollama` with one key env each.
+- `.agents/orchestrator/NOTES.md` (this section). Older sections that described
+  the prior state are marked `(superseded 2026-09-11)`:
+  `## Helper flags / env (llm_json.sh)`, `## Fallback removed → loud failure`,
+  `## Multi-provider LLM fallback (groq -> gemini -> cline -> ollama)`, and
+  `## Re-added OpenRouter + OpenCode providers`.
+
+**Verification (docs only).** The code-side behaviour is verified by the
+`.github` change; this docs task ran:
+
+- `rg -n 'OPENROUTER_API_KEY_[2-5]|OPENCODE_API_KEY|GEMINI_API_KEY_2' .agents/orchestrator/`
+  → STATE-MACHINE.md: 0 hits. NOTES.md: all remaining hits are historical log
+  entries (early build/rotation narrative) or sit inside the sections explicitly
+  marked `(superseded 2026-09-11)`.
+- `rg -n 'openrouter gemini groq cline ollama' .agents/orchestrator/STATE-MACHINE.md`
+  → matches the new default-order line.
+- `wc -l` before → after recorded in the task report; `git diff --stat` limited
+  to the two owned docs.
+
+**Residual risks.** Same as the prior chain: model ids are from the task spec
+and may drift (`*_MODELS` / `*_ENDPOINT` remain overridable); `supports_effort`
+is a hardcoded per-provider constant; no live-provider contract test exists.
 
