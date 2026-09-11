@@ -30,6 +30,7 @@ permission:
     "node *": allow
     "npm test*": allow
     "npm run *": allow
+    "gh issue comment*": allow
     "git push origin dev*": deny
     "git push origin main*": deny
     "gh pr merge*": deny
@@ -57,7 +58,7 @@ Read tl:v1 spec from issue comments
 
 2. **Implement the spec.** Follow the objective, steps, and acceptance criteria exactly.
 
-3. **Use conventional commits.** Format: `feat(scope): {issue-number} {summary}`.
+3. **Use conventional commits.** Format: `feat: {issue-number} {summary}`.
 
 4. **Create PR to dev.** Push `session/{id}-dev` and open PR with `Fixes #<issue>`.
 
@@ -70,7 +71,7 @@ Read tl:v1 spec from issue comments
 ## Commit Format
 
 ```
-feat(scope): {issue-number} {summary}
+feat: {issue-number} {summary}
 ```
 
 ## Result Comment Format

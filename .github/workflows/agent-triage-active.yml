@@ -89,8 +89,6 @@ jobs:
           gh label create "kind/technical" --color "1D76DB" --description "Requires technical work (code, implementation)" 2>/dev/null || true
           gh label create "kind/non-technical" --color "FBCA04" --description "Non-technical (admin, docs, research)" 2>/dev/null || true
           gh label create "tl/ready" --color "0E8A16" --description "Tech-lead should pick up" 2>/dev/null || true
-          gh label create "tl/building" --color "1D76DB" --description "Tech-lead/programmer working" 2>/dev/null || true
-          gh label create "tl/done" --color "0E8A16" --description "Work complete (terminal)" 2>/dev/null || true
           gh label create "status:done" --color "0E8A16" --description "Issue complete" 2>/dev/null || true
 
           # Remove any previous kind label

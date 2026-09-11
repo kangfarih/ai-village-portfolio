@@ -183,7 +183,7 @@ jobs:
             exit 1
           fi
 
-          COMMIT_SUBJECT="$(printf 'feat(scope): %s %s' "$ISSUE_NUMBER" "$SUMMARY" | cut -c1-72)"
+          COMMIT_SUBJECT="$(printf 'feat: %s %s' "$ISSUE_NUMBER" "$SUMMARY" | cut -c1-72)"
           git commit -q -m "$COMMIT_SUBJECT"
           git push -u origin "${BRANCH}"
 
