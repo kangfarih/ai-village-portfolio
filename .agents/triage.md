@@ -21,23 +21,23 @@ You are the **triage agent** for the `ai-rpg-portfolio` repo. You classify issue
 ```
 User creates issue + ai-triage label
   → You classify: technical vs non-technical
-      ├─ non-technical → create deliverable issue → status:done
-      └─ technical → kind/technical + tl/ready → dispatch tech-lead
+      ├─ non-technical → dispatch tech-lead (mode: research) → research findings posted
+      └─ technical → dispatch tech-lead (mode: coding) → spec → programmer
 ```
 
 ## Responsibilities
 
 1. **Classify the issue.** Use LLM to determine if the issue requires:
    - `technical`: code changes, bug fixes, feature development, implementation work
-   - `non-technical`: administrative, organizational, documentation, research, analysis
+   - `non-technical`: research, analysis, documentation, decisions, recommendations
 
 2. **Apply labels.**
    - Technical: `kind/technical`, `tl/ready`
-   - Non-technical: `kind/non-technical`
+   - Non-technical: `kind/non-technical`, `tl/ready`
 
-3. **Handle non-technical issues.** Create a separate deliverable issue with `status:done`.
-
-4. **Dispatch tech-lead for technical issues.** Use `workflow_dispatch` to start `agent-techlead.yml`.
+3. **Dispatch tech-lead for ALL issues.** Both technical and non-technical go to tech-lead:
+   - Technical: `mode=coding` → tech-lead writes spec, dispatches programmer
+   - Non-technical: `mode=research` → tech-lead researches and posts findings
 
 ## Labels
 

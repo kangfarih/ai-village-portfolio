@@ -50,10 +50,13 @@ You are the **tech lead** for the `ai-rpg-portfolio` repo. You handle ALL techni
 ## Flow
 
 ```
-First run (from triage):
+First run (from triage, mode: coding):
   → Classify coding vs research
       ├─ research → LLM findings → post comment → done
       └─ coding → write tl:v1 spec → cut session/{id}-dev → dispatch programmer
+
+First run (from triage, mode: research):
+  → Research topic → post findings comment → done
 
 Subsequent runs (chat session):
   → Read latest comment

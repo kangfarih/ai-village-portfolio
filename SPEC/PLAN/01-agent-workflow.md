@@ -12,21 +12,15 @@ The old 6-agent pipeline (PO, TL, Programmer, QA, DevOps, Orchestrator) has been
 ```
 User creates issue + ai-triage label
   → agent-triage (classify technical vs non-technical)
-      ├─ non-technical → create deliverable issue → status:done
-      └─ technical → kind/technical + tl/ready → dispatch agent-techlead
-                      (chat session mode)
-                      ├─ 1st run: classify coding vs research
-                      │   ├─ research → LLM findings → post comment → done
-                      │   └─ coding → write tl:v1 spec → cut session/{id}-dev → dispatch programmer
-                      └─ subsequent runs: read latest comment → dispatch programmer if needed → detect PR merge → done
-                            │
-                            ▼ (coding only)
-                          agent-programmer
-                          - Read tl:v1 spec
-                          - Code on session/{id}-dev
-                          - Push + create PR → dev
-                          - Post BUILT comment
-```
+      ├─ technical → kind/technical + tl/ready → dispatch agent-techlead (mode: coding)
+      │               (chat session mode)
+      │               ├─ 1st run: classify coding vs research
+      │               │   ├─ research → LLM findings → post comment → done
+      │               │   └─ coding → write tl:v1 spec → cut session/{id}-dev → dispatch programmer
+      │               └─ subsequent runs: read latest comment → dispatch programmer if needed → detect PR merge → done
+      │
+      └─ non-technical → kind/non-technical + tl/ready → dispatch agent-techlead (mode: research)
+                          → LLM research → post findings comment → done
 
 ## Roles
 

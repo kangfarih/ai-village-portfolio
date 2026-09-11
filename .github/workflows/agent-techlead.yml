@@ -2,9 +2,9 @@ name: agent-techlead
 
 permissions: {}
 
-# Simplified tech-lead: handles ALL technical work (coding + research).
-# Two triggers:
-#   1. workflow_dispatch — first run from triage (classify + spec + dispatch programmer)
+# Simplified tech-lead: handles ALL work (coding + research).
+# Triggers:
+#   1. workflow_dispatch — from triage (mode: coding or research)
 #   2. issue_comment — chat session (respond to user comments, re-dispatch programmer, detect merge)
 on:
   workflow_dispatch:
@@ -12,6 +12,10 @@ on:
       issue_number:
         description: "Issue number to process"
         required: true
+      mode:
+        description: "coding or research"
+        required: false
+        default: "coding"
   issue_comment:
     types: [created]
 
@@ -52,6 +56,7 @@ jobs:
           AUTHOR_ASSOC: ${{ github.event.comment.author_association }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           INPUT_ISSUE: ${{ inputs.issue_number }}
+          INPUT_MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" = "issue_comment" ]; then
@@ -66,6 +71,7 @@ jobs:
             fi
           else
             echo "number=$INPUT_ISSUE" >> "$GITHUB_OUTPUT"
+            echo "mode=$INPUT_MODE" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Skip bot comments
@@ -77,6 +83,7 @@ jobs:
         id: process
         env:
           ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
+          ISSUE_MODE: ${{ steps.issue.outputs.mode }}
           GH_TOKEN: ${{ github.token }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -91,27 +98,32 @@ jobs:
           gh label create "tl/building" --color "1D76DB" --description "Tech-lead/programmer working" 2>/dev/null || true
           gh label create "tl/done" --color "0E8A16" --description "Work complete (terminal)" 2>/dev/null || true
 
-          # Check if spec already exists
-          HAS_SPEC="$(gh issue view "$ISSUE_NUMBER" --json comments --jq '[.comments[].body] | map(select(contains("<!-- tl:v1 -->"))) | length' 2>/dev/null || echo "0")"
-
           # Get issue content
           ISSUE_JSON="$(gh issue view "$ISSUE_NUMBER" --json title,body --jq '{title, body}' 2>/dev/null || echo '{}')"
           ISSUE_TITLE="$(printf '%s' "$ISSUE_JSON" | jq -r '.title // ""' 2>/dev/null || echo "")"
           ISSUE_BODY="$(printf '%s' "$ISSUE_JSON" | jq -r '.body // ""' 2>/dev/null || echo "")"
 
-          # First run: no spec yet, classify and write spec
-          if [ "$HAS_SPEC" = "0" ]; then
+          # Determine action based on mode or spec existence
+          if [ "$ISSUE_MODE" = "research" ]; then
+            # Forced research mode from triage
             echo "action=first_run" >> "$GITHUB_OUTPUT"
+            echo "task_type=research" >> "$GITHUB_OUTPUT"
           else
-            # Subsequent run: chat session mode
-            echo "action=chat_session" >> "$GITHUB_OUTPUT"
+            # Check if spec already exists
+            HAS_SPEC="$(gh issue view "$ISSUE_NUMBER" --json comments --jq '[.comments[].body] | map(select(contains("<!-- tl:v1 -->"))) | length' 2>/dev/null || echo "0")"
+            if [ "$HAS_SPEC" = "0" ]; then
+              echo "action=first_run" >> "$GITHUB_OUTPUT"
+            else
+              echo "action=chat_session" >> "$GITHUB_OUTPUT"
+            fi
           fi
+
           # Write title and body to files to avoid shell escaping issues
           printf '%s' "$ISSUE_TITLE" > /tmp/issue_title.txt
           printf '%s' "$ISSUE_BODY" > /tmp/issue_body.txt
 
       - name: First run — classify coding vs research
-        if: steps.process.outputs.action == 'first_run'
+        if: steps.process.outputs.action == 'first_run' && steps.process.outputs.task_type != 'research'
         id: classify
         env:
           ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
@@ -157,7 +169,7 @@ jobs:
           echo "task_type=$TASK_TYPE" >> "$GITHUB_OUTPUT"
 
       - name: First run — handle research
-        if: steps.process.outputs.action == 'first_run' && steps.classify.outputs.task_type == 'research'
+        if: steps.process.outputs.action == 'first_run' && (steps.classify.outputs.task_type == 'research' || steps.process.outputs.task_type == 'research')
         env:
           ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
           GH_TOKEN: ${{ github.token }}
@@ -208,7 +220,7 @@ jobs:
           gh issue edit "$ISSUE_NUMBER" --add-label "tl/done"
 
       - name: First run — write spec for coding
-        if: steps.process.outputs.action == 'first_run' && steps.classify.outputs.task_type == 'coding'
+        if: steps.process.outputs.action == 'first_run' && steps.classify.outputs.task_type == 'coding' && steps.process.outputs.task_type != 'research'
         id: spec
         env:
           ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
@@ -269,7 +281,7 @@ jobs:
           gh issue edit "$ISSUE_NUMBER" --add-label "tl/building"
 
       - name: First run — cut branch and dispatch programmer
-        if: steps.process.outputs.action == 'first_run' && steps.classify.outputs.task_type == 'coding'
+        if: steps.process.outputs.action == 'first_run' && steps.classify.outputs.task_type == 'coding' && steps.process.outputs.task_type != 'research'
         env:
           ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
           GH_TOKEN: ${{ github.token }}

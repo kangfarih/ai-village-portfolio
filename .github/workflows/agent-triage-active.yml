@@ -101,27 +101,14 @@ jobs:
             gh issue edit "$ISSUE_NUMBER" --add-label "kind/non-technical"
           fi
 
-      - name: Handle non-technical issues
+      - name: Dispatch tech-lead for non-technical issues (research)
         if: steps.classify.outputs.classification == 'non-technical'
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
-          ISSUE_TITLE: ${{ github.event.issue.title }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Create a deliverable issue for non-technical work
-          DELIVERABLE_BODY="$(printf 'Parent: #%s\n\nThis is a non-technical deliverable created by triage.\n\nStatus: pending' "$ISSUE_NUMBER")"
-          NEW_ISSUE="$(gh issue create \
-            --title "[Deliverable] ${ISSUE_TITLE}" \
-            --body "$DELIVERABLE_BODY" \
-            --label "kind/non-technical" 2>&1 || echo "")"
-          NEW_NUMBER="$(printf '%s' "$NEW_ISSUE" | grep -oE '[0-9]+$' || echo "")"
-          if [ -n "$NEW_NUMBER" ]; then
-            gh issue comment "$ISSUE_NUMBER" --body "<!-- bot -->Non-technical issue classified. Deliverable created: #${NEW_NUMBER}"
-            gh issue edit "$ISSUE_NUMBER" --add-label "status:done"
-          else
-            gh issue comment "$ISSUE_NUMBER" --body "<!-- bot -->Non-technical issue classified but deliverable creation failed. Please create manually."
-          fi
+          gh workflow run agent-techlead.yml --repo "${{ github.repository }}" --ref dev -f issue_number="${ISSUE_NUMBER}" -f mode="research"
 
       - name: Dispatch tech-lead for technical issues
         if: steps.classify.outputs.classification == 'technical'
@@ -130,4 +117,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh workflow run agent-techlead.yml --repo "${{ github.repository }}" --ref dev -f issue_number="${ISSUE_NUMBER}"
+          gh workflow run agent-techlead.yml --repo "${{ github.repository }}" --ref dev -f issue_number="${ISSUE_NUMBER}" -f mode="coding"
