@@ -217,26 +217,41 @@ build_body() {
   if [ "$send_effort" = "true" ] && [ -n "$EFFORT" ]; then
     effort_field="$EFFORT"
   fi
-  jq -n \
-    --rawfile sys "$SYS_FILE" \
-    --rawfile user "$USER_FILE" \
-    --arg model "$model" \
-    --arg effort "$effort_field" \
-    --argjson mt "$MAX_TOKENS" \
-    --arg assistant "$assistant" \
-    --arg correction "$correction" \
-    '{
-       model: $model,
-       messages: (
-         [{role: "system", content: $sys}, {role: "user", content: $user}]
-         + (if $assistant != "" then
-              [{role: "assistant", content: $assistant},
-               {role: "user", content: $correction}]
-            else [] end)
-       ),
-       max_tokens: $mt
-     }
-     + (if $effort != "" then {reasoning_effort: $effort} else {} end)'
+  # HF native inference format (for huggingface provider)
+  if echo "$model" | grep -qE "(MiniCPM|Spark|Nex|GLM|NeoHorse)"; then
+    # Combine system + user + assistant + correction into single inputs string
+    local sys_text user_text combined
+    sys_text="$(cat "$SYS_FILE" 2>/dev/null || echo '')"
+    user_text="$(cat "$USER_FILE" 2>/dev/null || echo '')"
+    combined="${sys_text}\n${user_text}"
+    [ -n "$assistant" ] && combined="${combined}\nAssistant: ${assistant}"
+    [ -n "$correction" ] && combined="${combined}\n${correction}"
+    jq -n \
+      --arg inputs "$combined" \
+      --argjson mt "$MAX_TOKENS" \
+      '{inputs: $inputs, parameters: {max_new_tokens: $mt}}'
+  else
+    jq -n \
+      --rawfile sys "$SYS_FILE" \
+      --rawfile user "$USER_FILE" \
+      --arg model "$model" \
+      --arg effort "$effort_field" \
+      --argjson mt "$MAX_TOKENS" \
+      --arg assistant "$assistant" \
+      --arg correction "$correction" \
+      '{
+         model: $model,
+         messages: (
+           [{role: "system", content: $sys}, {role: "user", content: $user}]
+           + (if $assistant != "" then
+                [{role: "assistant", content: $assistant},
+                 {role: "user", content: $correction}]
+              else [] end)
+         ),
+         max_tokens: $mt
+       }
+       + (if $effort != "" then {reasoning_effort: $effort} else {} end)'
+  fi
 }
 
 # POST the body to $1=ENDPOINT with $2=KEY; capture HTTP code into the global
@@ -281,6 +296,14 @@ api_error_message() {
 # providers return HTTP 200 with an {"error":...} overload body or an empty /
 # truncated message; callers must treat "" as a transient, not a success.
 extract_content() {
+  # HF native response format: .generated_text or array of .generated_text
+  local hf_text
+  hf_text="$(jq -r '.generated_text // .[0].generated_text // empty' "$BODY_FILE" 2>/dev/null || true)"
+  if [ -n "$hf_text" ]; then
+    echo "$hf_text"
+    return 0
+  fi
+  # Fallback to OpenAI format
   jq -r '
     (.choices[0].message.content // "")
     | if type == "string" then .
