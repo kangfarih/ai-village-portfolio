@@ -78,6 +78,6 @@ The following files from the old 6-agent pipeline are superseded:
 ## Conventions
 
 - **Session branch**: `session/{issue-number}-dev`
-- **Commits**: `feat(scope): {issue-number} {summary}`
+- **Commits**: `feat: {issue-number} {summary}`
 - **Human-only merge**: agents never merge their own PR
 - **Evidence over claims**: every Status move cites branch name + PR URL + merge SHA

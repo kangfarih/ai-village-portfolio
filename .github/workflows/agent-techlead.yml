@@ -204,7 +204,8 @@ jobs:
             exit 1
           fi
 
-          gh issue edit "$ISSUE_NUMBER" --remove-label "tl/ready" --add-label "tl/done"
+          gh issue edit "$ISSUE_NUMBER" --remove-label "tl/ready" 2>/dev/null || true
+          gh issue edit "$ISSUE_NUMBER" --add-label "tl/done"
 
       - name: First run — write spec for coding
         if: steps.process.outputs.action == 'first_run' && steps.classify.outputs.task_type == 'coding'
@@ -264,7 +265,8 @@ jobs:
           } > /tmp/tl_comment.md
           gh issue comment "$ISSUE_NUMBER" --body-file /tmp/tl_comment.md
 
-          gh issue edit "$ISSUE_NUMBER" --remove-label "tl/ready" --add-label "tl/building"
+          gh issue edit "$ISSUE_NUMBER" --remove-label "tl/ready" 2>/dev/null || true
+          gh issue edit "$ISSUE_NUMBER" --add-label "tl/building"
 
       - name: First run — cut branch and dispatch programmer
         if: steps.process.outputs.action == 'first_run' && steps.classify.outputs.task_type == 'coding'
@@ -308,7 +310,8 @@ jobs:
           BRANCH="session/${ISSUE_NUMBER}-dev"
           MERGED_PR="$(gh pr list --state merged --head "$BRANCH" --json number --jq '.[0].number // ""' 2>/dev/null || echo "")"
           if [ -n "$MERGED_PR" ]; then
-            gh issue edit "$ISSUE_NUMBER" --remove-label "tl/building" --add-label "tl/done"
+            gh issue edit "$ISSUE_NUMBER" --remove-label "tl/building" 2>/dev/null || true
+            gh issue edit "$ISSUE_NUMBER" --add-label "tl/done"
             gh issue comment "$ISSUE_NUMBER" --body "<!-- bot -->PR #${MERGED_PR} has been merged. Work complete."
             exit 0
           fi
