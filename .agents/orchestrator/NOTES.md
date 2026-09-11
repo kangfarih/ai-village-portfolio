@@ -2233,3 +2233,99 @@ deduped by the delegate step, so the forced re-run does not duplicate children.
 - **`label.name` is only populated on a `labeled` event.** The triage workflow's
   trigger is `issues: types: [labeled]`, so this is always set for the events it
   handles; no other event can reach the job.
+
+---
+
+## Goal-key dedupe hardening
+
+**What changed.** `agent-orchestrate`'s Delegate step now computes a
+deterministic per-parent **goal key** and stamps every created child (goal or
+ticket) with it as the body's FIRST line:
+
+```
+<!-- agent-goal-key:v1 parent:#<N> kind:<kind> key:<key> -->
+```
+
+where `<key>` is the normalized `"<kind>:<title>"` — lowercased; each run of any
+character outside `[a-z0-9]` collapsed to `-`; leading/trailing `-` trimmed;
+capped at 80 chars (`goal_key()` uses `tr`, `sed -E`, `cut`). Before creating a
+child, the step skips it when ANY existing `ai-goal` **or** `ai-ticket` body
+contains that exact marker. The two lists are concatenated once into
+`EXISTING_ALL_JSON` (`jq -n --argjson g ... --argjson t ... '$g + $t'`). Both the
+goal and ticket `printf` body formats were reordered so the key marker is emitted
+first.
+
+**Rationale.** The previous dedupe keyed on the EXACT generated title (plus the
+`agent-ticket:v1` marker), and the LLM re-phrases titles across runs. A
+`force=true` re-run — or a first run that failed after creating one child but
+before posting the `<!-- orchestrator:v1 -->` marker — could therefore create
+semantically-duplicate children. A normalized per-parent key makes those runs an
+idempotent **reconcile**: children whose key already exists are reused (the
+summary links them as `_(existing, key)_`) and only genuinely new keys are
+created. The exact-title fallbacks are kept so children created before this
+hardening are still deduped.
+
+**Files changed (exactly 3):**
+
+- `.github/workflows/agent-orchestrate.yml` — header note; `ALL_GOALS_JSON`
+  (unfiltered goals list kept for key lookup); ticket fetch gains `url`;
+  `EXISTING_ALL_JSON`; `goal_key()`; per-loop `KEY`/`KEY_MARKER`; key-based skip
+  in both the code and non-code branches; key marker first in both body formats.
+- `.agents/orchestrator/STATE-MACHINE.md` — §2 per-key dedupe bullet, §4
+  source-of-truth table row, §8 `force=true` reconcile note, §11 goal-key dedupe
+  bullet.
+- `.agents/orchestrator/NOTES.md` (this section).
+
+**Verification (actual output).**
+
+- `ruby -ryaml -e "YAML.load_file('.github/workflows/agent-orchestrate.yml')"` →
+  `YAML OK`.
+- All 7 `run:` blocks extracted (Ruby YAML) and `bash -n` each → all `OK`.
+- `goal_key` extracted verbatim and run under real bash:
+  - `"Create an isolated 50-NPC proof of concept"` and
+    `"create an ISOLATED 50 NPC proof of concept!!"` → both
+    `create-an-isolated-50-npc-proof-of-concept` (identical);
+  - `"  ...Hello, World!!!  "` → `hello-world` (edges trimmed);
+  - a 120-char title → key length exactly 80 (capped);
+  - `goal_key "!!!"` → empty string (no crash — `sed`/`cut` yield ""); in the
+    workflow the input is always `${KIND}:${TITLE}`, so a `"!!!"` title yields
+    the bare kind (e.g. `code`), never empty.
+- Mock `gh` (persistent JSON issue store) + mock `git` + real `jq` drove the
+  **extracted Delegate step**: **29/29 assertions pass**:
+  - (a) fresh mixed run → 2 children created; both bodies' FIRST line is the
+    exact key marker (`parent:#1 kind:code key:code-build-api-endpoint`,
+    `parent:#1 kind:docs key:docs-write-the-docs`), ticket's second line is the
+    `agent-ticket:v1` marker;
+  - (b) `force`-style re-run with **re-phrased** titles
+    (`"  BUILD   api  endpoint!! "`, `"write THE docs."`) → 0 created, both links
+    say `_(existing, key)_` (key dedupe, not the title fallback);
+  - (c) pre-hardening child (exact title, no key marker) → skipped via the title
+    fallback (`_(existing)_`, not `_(existing, key)_`);
+  - (d) a genuinely new kind/title → created with its key marker;
+  - (e) a `parent:#300` marker does NOT satisfy a `parent:#30` lookup (and vice
+    versa) → the #30 child is created.
+- `grep`: the exact marker literal appears in the `KEY_MARKER` assignment and
+  `$KEY_MARKER` is emitted first in both body `printf`s; the only `git push` is
+  `git push -u origin "issue/${ISSUE_NUMBER}"`; no `--force`, no `gh pr merge`,
+  no `git merge` into `dev`/`main`.
+- `git status --short` before the feature commit showed exactly the 3 files
+  (`.github/workflows/agent-orchestrate.yml`,
+  `.agents/orchestrator/STATE-MACHINE.md`, `.agents/orchestrator/NOTES.md`); it
+  is clean after both commits.
+
+**Commit + push record (dev only — NEVER main).**
+
+- Commit 1 (`feat(orchestrator): deterministic per-parent goal-key dedupe
+  (idempotent force reconcile)`) — `.github/workflows/agent-orchestrate.yml`
+  only. SHA `04e6250`; `git push origin dev` → `6bc4fd1..04e6250  dev -> dev`.
+- Commit 2 (this NOTES + STATE-MACHINE docs) —
+  `docs(orchestrator): record goal-key dedupe hardening`; its own SHA/push range
+  recorded in the task report post-push.
+
+**Residual limitation.** Semantic paraphrases with a very different *normalized*
+title still produce a different key and therefore a new child (e.g. reordering
+words or substituting synonyms: `build-api-endpoint` vs
+`create-the-http-api-route`). The goal-key dedupe only catches re-phrasings that
+normalize identically. The `<!-- orchestrator:v1 -->` idempotency guard (which
+skips the LLM + delegate entirely unless `force=true`) remains the primary
+protection against duplicate runs.

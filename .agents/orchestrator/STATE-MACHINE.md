@@ -88,6 +88,19 @@ The orchestrator creates sub-issues titled `[GOAL] <title> (from #<parent>)`:
   already present. Dedupe is per goal, so a partial prior run or a later-deleted
   goal is recovered without duplicating the rest. A failed lookup is a loud
   failure (no `|| true`), never treated as "no existing goals".
+- **Per-key dedupe (goal-key marker):** every created child — goal **or**
+  ticket — carries as its **first line** the exact marker
+  `<!-- agent-goal-key:v1 parent:#<parent#> kind:<kind> key:<key> -->`, where
+  `<key>` is the normalized `"<kind>:<title>"` (lowercase; every run of any
+  character outside `[a-z0-9]` becomes `-`; leading/trailing `-` trimmed;
+  capped at 80 chars). Before creating any child, the PO skips it if ANY
+  existing `ai-goal` **or** `ai-ticket` issue body already contains that exact
+  marker (parent+kind+key). Because the key is case/spacing/punctuation
+  insensitive, an LLM that re-phrases a title on a later run reuses the existing
+  child instead of duplicating it. The exact-title fallbacks above/below are
+  retained for children created before this hardening (they carry no key
+  marker). The key-based skip is additive: a child is skipped when EITHER the
+  key matches OR the exact title matches.
 - **Loud failure:** any failure before/while creating goals posts a parent
   comment beginning `<!-- orchestrator:v1-error -->` and exits non-zero.
   `triage/accepted` is added to the parent only at the very end, after success.
@@ -162,6 +175,7 @@ No auto-close — a human closes the parent.
 | Revision counter | `<!-- attempts:N -->` | issue comment |
 | Orchestrator run | `<!-- orchestrator:v1 -->` | parent comment |
 | Orchestrator failure | `<!-- orchestrator:v1-error -->` | parent comment |
+| Child dedupe key | `<!-- agent-goal-key:v1 parent:#<n> kind:<kind> key:<key> -->` (first body line) | goal/ticket issue body |
 
 Justification (vs a committed state file):
 
@@ -423,7 +437,11 @@ the LLM breakdown, goal/ticket delegation, and TL dispatch steps are all skipped
 dispatch (e.g. a manual run racing the triage-dispatched run) from re-deriving
 goals and re-dispatching `agent-techlead` for the same goals. A manual
 `workflow_dispatch` with input `force=true` bypasses the guard and re-runs the
-orchestration. A failed guard query (missing marker / unresolvable list) is
+orchestration; the delegate step's per-parent goal-key dedupe (§2) then makes it
+an **idempotent reconcile** — the re-run reuses every child whose
+`agent-goal-key:v1` marker already exists and creates only genuinely new
+keys/titles, so a forced run never duplicates re-phrased children. A failed
+guard query (missing marker / unresolvable list) is
 treated as "not yet orchestrated" and proceeds, so a transient `gh` error never
 strands the loop.
 
@@ -694,6 +712,12 @@ For each non-code goal the orchestrator creates a new issue:
   validated once (`jq -e 'type=="array"'`) so a garbled/empty response is a loud
   failure, not a silent duplicate. Code goals keep the exact-title
   `(from #<parent#>)` dedupe.
+- **Goal-key dedupe (§2):** in addition to the exact-title+marker check, a
+  ticket is skipped when ANY `ai-goal` or `ai-ticket` body already contains this
+  ticket's `<!-- agent-goal-key:v1 parent:#<parent#> kind:<kind> key:<key> -->`
+  marker. The key marker is the ticket body's FIRST line, ahead of the
+  `agent-ticket:v1` marker, and the same key check guards code goals. The
+  combined lookup array concatenates the `ai-goal` and `ai-ticket` lists.
 - **Goal dedupe (W4):** immediately after `goals.json` validates, the
   orchestrator dedupes it with `jq 'unique_by([.kind,.title])'` before computing
   the ≤6 counts, so a same-run duplicate title cannot create duplicate issues.
