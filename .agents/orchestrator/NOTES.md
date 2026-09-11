@@ -2329,3 +2329,114 @@ words or substituting synonyms: `build-api-endpoint` vs
 normalize identically. The `<!-- orchestrator:v1 -->` idempotency guard (which
 skips the LLM + delegate entirely unless `force=true`) remains the primary
 protection against duplicate runs.
+
+---
+
+## Fuzzy (token-overlap) goal dedupe
+
+**What changed.** `agent-orchestrate`'s Delegate step gained a **supplementary**
+token-overlap (Jaccard) dedupe next to the deterministic goal-key dedupe, for
+near-duplicate titles that normalize to different keys. After `goal_key()` the
+step defines:
+
+- `FUZZY_THRESHOLD="${FUZZY_DEDUPE_THRESHOLD:-0.6}"` — threshold, env-overridable.
+- `title_tokens()` — lowercases the title, replaces every run of non-alphanumerics
+  with a space, splits, drops empty tokens, and `unique`s them (compact JSON).
+- `fuzzy_match_url()` — computes the candidate title's token set; if it has
+  **< 3 tokens** it prints nothing and returns. Otherwise it scopes to existing
+  children whose body contains `parent:#<ISSUE_NUMBER> kind:<kind> ` (note the
+  trailing space, matching the exact `agent-goal-key:v1` marker), computes the
+  Jaccard similarity `|intersection| / |union|` against each scoped child title,
+  keeps those `>= threshold`, and prints the best-scoring child's `url` (or `""`).
+
+In BOTH the `code` branch and the non-code `else` branch, AFTER the existing
+exact-title and exact-key skip blocks and BEFORE building `SUB_BODY`:
+
+```bash
+FUZZY_URL="$(fuzzy_match_url "$TITLE" "$KIND")"
+if [ -n "$FUZZY_URL" ]; then
+  printf '%s\n' "- ${SUB_TITLE} - ${FUZZY_URL} _(existing, fuzzy)_" >> /tmp/goal_links.md   # or ticket_links.md
+  echo "Skipping fuzzy-duplicate goal: ${SUB_TITLE} ~ ${FUZZY_URL}"                          # or "... ticket: ..."
+  continue
+fi
+```
+
+The file header comment now documents the supplementary fuzzy dedupe.
+
+**Rationale.** The deterministic key dedupes case/spacing/punctuation variants
+of the same title, but the LLM re-phrases titles across runs (adds/removes/
+reorders words). A `force=true` reconcile — or a run that failed after creating
+one child but before the `<!-- orchestrator:v1 -->` marker — could still create a
+semantically-duplicate child. A scoped token-overlap check catches those
+near-duplicates while never crossing parents or kinds. Exact-title and exact-key
+matches run first and win; fuzzy only fills the gap.
+
+**Files changed (exactly 3):**
+
+- `.github/workflows/agent-orchestrate.yml` — header note; `FUZZY_THRESHOLD`,
+  `title_tokens()`, `fuzzy_match_url()`; fuzzy skip in both loop branches.
+- `.agents/orchestrator/STATE-MACHINE.md` — §2 fuzzy-dedupe bullet next to the
+  per-key bullet.
+- `.agents/orchestrator/NOTES.md` (this section).
+
+**Spec deviation (important).** The mandated snippet computed the union as
+`([ ($new + $b) | unique ] | length)`. The outer `[...]` wraps the array that
+`unique` already returns, so that length is always **1**; the code therefore
+computed the raw **intersection count**, not Jaccard, and `write THE docs` vs
+`Write the documentation` (true Jaccard `0.5`) matched at the default threshold —
+contradicting the contract (`|intersection| / |union|`) and the mandated test.
+Fixed minimally to `(($new + $b) | unique | length)`. No other change to the
+mandated snippet; the fix is required for the stated semantics and tests.
+
+**Verification (actual output).**
+
+- `ruby -ryaml -e "YAML.load_file('.github/workflows/agent-orchestrate.yml')"` →
+  `YAML OK`.
+- All **7** `run:` blocks extracted (Ruby YAML) and `bash -n` each → all
+  `bash -n OK`. (`shellcheck` not installed on the host.)
+- Extracted `title_tokens`/`fuzzy_match_url` verbatim and drove them with real
+  bash + jq against a synthetic `EXISTING_ALL_JSON` whose markers are
+  `parent:#7 kind:code`, `parent:#7 kind:docs`, `parent:#70 kind:code`. **8/8
+  assertions pass:**
+  - `"Implement an isolated 50-NPC rendering proof of concept"` vs existing
+    `"Create an isolated 50-NPC proof of concept"` → actual Jaccard **0.7**
+    (7/10; the tokenizer splits `50-NPC` into `50`+`npc`, so the task's stated
+    `5/8 = 0.625` is a miscount) → **MATCH**, returns `https://ex/code7`.
+  - `"write THE docs"` vs existing `"Write the documentation"` → Jaccard
+    **0.5** → **NO match** (`""`).
+  - same-parent **different kind**: candidate `code` `"Write the documentation"`
+    does **not** match the `parent:#7 kind:docs` entry → `""` (that entry's
+    Jaccard is 1.0, proving scope, not threshold, is what excludes it).
+  - **different parent**: candidate vs the `parent:#70 kind:code` entry
+    `"Unrelated zebra quantum pancake"` → Jaccard 0.8 but `""` (excluded by
+    scope).
+  - `<3`-token titles (`"write docs"`, `"isolated proof"`) → `""` (early return).
+  - exact key: `goal_key "code:<title>"` = `code-create-an-isolated-50-npc-proof-of-concept`;
+    the key-marker `contains` lookup finds the existing url — the deterministic
+    key path is checked **before** fuzzy in both branches (line order: existing
+    title < key < fuzzy).
+  - threshold override `FUZZY_THRESHOLD=0.4` makes the 0.5 case match.
+- Push/merge audit: the only `git push` in the file is
+  `git push -u origin "issue/${ISSUE_NUMBER}"`; **no** `--force`, **no**
+  `git merge`, **no** `gh pr merge`; no new push targets.
+- `git diff --stat` for the round touches exactly the 3 intended paths;
+  `git status --short` clean after both commits.
+
+**Commit + push record (dev only — NEVER main).**
+
+- Commit 1 `93e8314` —
+  `feat(orchestrator): fuzzy token-overlap dedupe for re-phrased goal titles`;
+  files: `.github/workflows/agent-orchestrate.yml` only.
+  `git push origin dev` OK (`3babe76..93e8314  dev -> dev`).
+- Commit 2 (this NOTES + STATE-MACHINE docs) —
+  `docs(orchestrator): record fuzzy goal dedupe`; its own SHA/push range recorded
+  in the task report post-push (not invented here).
+
+**Residual limitation.** The fuzzy check is lexical only: a semantic paraphrase
+whose token overlap is below the threshold (e.g. synonyms with no shared words)
+still creates a new child. The threshold is a tunable trade-off — lower catches
+more re-phrasings but risks false merges of genuinely distinct goals; raise
+`FUZZY_DEDUPE_THRESHOLD` to reduce false positives. Fuzzy matching is scoped to
+existing children that already carry the `parent:#N kind:<kind> ` goal-key
+marker, so pre-hardening children (no marker) are never fuzzy candidates.
+

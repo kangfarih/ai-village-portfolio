@@ -101,6 +101,21 @@ The orchestrator creates sub-issues titled `[GOAL] <title> (from #<parent>)`:
   retained for children created before this hardening (they carry no key
   marker). The key-based skip is additive: a child is skipped when EITHER the
   key matches OR the exact title matches.
+- **Fuzzy dedupe (token overlap):** supplementing the deterministic key, the
+  same delegate step runs a Jaccard token-overlap check scoped to the **same
+  parent AND same kind** — it only considers existing children whose body
+  carries the `parent:#<parent#> kind:<kind> ` marker prefix (with trailing
+  space). The title token set is the lowercased title with every run of
+  non-alphanumerics turned into a space, split, empty tokens dropped, and
+  deduplicated (`unique`). A child is skipped when BOTH the new title has
+  **≥ 3 tokens** AND the best Jaccard similarity against a scoped existing
+  child title is **≥ `FUZZY_DEDUPE_THRESHOLD`** (default `0.6`,
+  env-overridable). This catches re-phrasings the exact-normalized key misses
+  (e.g. reordered/added words). Ordering: the exact-title and exact-key checks
+  run FIRST and win; only when neither matches does fuzzy run. A fuzzy-skipped
+  child is linked in the summary as `_(existing, fuzzy)_` and logged as
+  `Skipping fuzzy-duplicate goal/ticket`. A < 3-token title is never a fuzzy
+  match, and matching never crosses parents or kinds.
 - **Loud failure:** any failure before/while creating goals posts a parent
   comment beginning `<!-- orchestrator:v1-error -->` and exits non-zero.
   `triage/accepted` is added to the parent only at the very end, after success.
