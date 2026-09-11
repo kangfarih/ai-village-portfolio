@@ -27,6 +27,12 @@ permissions: {}
 # delegate step skips any child whose exact marker already appears in ANY
 # `ai-goal` OR `ai-ticket` body, so re-runs and `force=true` runs reconcile
 # (create only genuinely new keys) instead of duplicating re-phrased goals.
+#
+# Supplementary fuzzy dedupe: the same delegate step also tokenizes the title
+# (lowercased, non-alphanumerics -> space) and skips a child when a same
+# parent+kind child's title has a Jaccard token overlap >= FUZZY_DEDUPE_THRESHOLD
+# (default 0.6) and the new title has >= 3 tokens, catching re-phrased titles
+# the deterministic key misses. Exact key match still wins first.
 on:
   workflow_dispatch:
     inputs:
@@ -287,6 +293,30 @@ jobs:
               | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-80
           }
 
+          # Supplementary token-overlap (Jaccard) dedupe for re-phrased titles
+          # the deterministic key misses. Same parent+kind, >=3 tokens, >=0.6.
+          FUZZY_THRESHOLD="${FUZZY_DEDUPE_THRESHOLD:-0.6}"
+          title_tokens() {
+            printf '%s' "$1" | jq -Rc 'ascii_downcase | gsub("[^a-z0-9]+";" ") | split(" ") | map(select(length>0)) | unique'
+          }
+          fuzzy_match_url() {
+            # $1 = candidate title, $2 = kind. Prints the best existing url, or "".
+            local new_tokens scope
+            new_tokens="$(title_tokens "$1")"
+            [ "$(printf '%s' "$new_tokens" | jq 'length')" -ge 3 ] || { printf ''; return 0; }
+            scope="parent:#${ISSUE_NUMBER} kind:$2 "
+            printf '%s' "$EXISTING_ALL_JSON" | jq -r \
+              --argjson new "$new_tokens" --arg scope "$scope" --argjson thr "$FUZZY_THRESHOLD" '
+              def toks: ascii_downcase | gsub("[^a-z0-9]+";" ") | split(" ") | map(select(length>0)) | unique;
+              [ .[] | select((.body // "") | contains($scope))
+                | (.title | toks) as $b
+                | { url,
+                    s: ( (([ $new[] | select(. as $x | $b | index($x)) ] | length) as $i
+                          | (($new + $b) | unique | length) as $u
+                          | if $u == 0 then 0 else ($i / $u) end )) } ]
+              | map(select(.s >= $thr)) | sort_by(-.s) | first | .url // ""'
+          }
+
           MARKER="$(gh issue view "$ISSUE_NUMBER" --json comments \
             --jq '[.comments[].body] | join("\n") | contains("<!-- orchestrator:v1 -->")')"
 
@@ -336,6 +366,12 @@ jobs:
                 echo "Skipping existing goal (key): ${SUB_TITLE}"
                 continue
               fi
+              FUZZY_URL="$(fuzzy_match_url "$TITLE" "$KIND")"
+              if [ -n "$FUZZY_URL" ]; then
+                printf '%s\n' "- ${SUB_TITLE} - ${FUZZY_URL} _(existing, fuzzy)_" >> /tmp/goal_links.md
+                echo "Skipping fuzzy-duplicate goal: ${SUB_TITLE} ~ ${FUZZY_URL}"
+                continue
+              fi
               # W2: trusted metadata FIRST, then the sanitized detail, so a
               # prompt-injected `Parent:`/`Kind:` inside detail cannot shadow it.
               SUB_BODY="$(printf '%s\nKind: %s\nIntegration branch: issue/%s\nParent: #%s\nAcceptance: post result as comment + link evidence.\n\n%s\n' \
@@ -367,6 +403,12 @@ jobs:
                 URL="$(printf '%s' "$EXISTING_ALL_JSON" | jq -r --arg m "$KEY_MARKER" 'first(.[] | select((.body // "") | contains($m)) | .url) // ""')"
                 printf '%s\n' "- ${SUB_TITLE} - ${URL} _(existing, key)_" >> /tmp/ticket_links.md
                 echo "Skipping existing ticket (key): ${SUB_TITLE}"
+                continue
+              fi
+              FUZZY_URL="$(fuzzy_match_url "$TITLE" "$KIND")"
+              if [ -n "$FUZZY_URL" ]; then
+                printf '%s\n' "- ${SUB_TITLE} - ${FUZZY_URL} _(existing, fuzzy)_" >> /tmp/ticket_links.md
+                echo "Skipping fuzzy-duplicate ticket: ${SUB_TITLE} ~ ${FUZZY_URL}"
                 continue
               fi
               # W2: trusted metadata FIRST (exact marker + Origin + Kind), then
