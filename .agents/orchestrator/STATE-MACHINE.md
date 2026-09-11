@@ -42,14 +42,27 @@ only when the resolved effort is non-empty.
 | 2 | `gemini` | `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions` | `GEMINI_API_KEY`, `GEMINI_API_KEY_2` | `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview` | no |
 | 3 | `cline` | `https://api.cline.bot/api/v1/chat/completions` | `CLINE_API_KEY` | `openrouter/free` | no |
 | 4 | `ollama` | `https://ollama.com/v1/chat/completions` | `OLLAMA_API_KEY` | `gpt-oss:20b`, `gpt-oss:120b` | no |
+| 5 | `openrouter` | `https://openrouter.ai/api/v1/chat/completions` | `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2` … `OPENROUTER_API_KEY_5` | `nex-agi/nex-n2.5-mini:free` | no |
+| 6 | `opencode` | `https://opencode.ai/zen/v1/chat/completions` | `OPENCODE_API_KEY` | `mimo-v2.5-free`, `ling-3.0-flash-fin-free`, `nemotron-3.5-lightning-free` | no |
+
+The default provider order is
+`groq -> gemini -> cline -> ollama -> openrouter -> opencode`.
+`supports_effort` is `true` for `groq` only; every other provider receives no
+`reasoning_effort`.
 
 Endpoints override via `GROQ_ENDPOINT` / `GEMINI_ENDPOINT` / `CLINE_ENDPOINT` /
-`OLLAMA_ENDPOINT`; model lists via `GROQ_MODELS` / `GEMINI_MODELS` /
-`CLINE_MODELS` / `OLLAMA_MODELS` (space-separated); the order/subset via
+`OLLAMA_ENDPOINT` / `OPENROUTER_ENDPOINT` / `OPENCODE_ENDPOINT`; model lists via
+`GROQ_MODELS` / `GEMINI_MODELS` / `CLINE_MODELS` / `OLLAMA_MODELS` /
+`OPENROUTER_MODELS` / `OPENCODE_MODELS` (space-separated); the order/subset via
 `LLM_PROVIDER_ORDER`. HTTP 400/404/422 falls through to the next model while
 401/402/403 advances to the next key/provider. The old single-model
 `vars.MODEL` repository variable is **no longer used** — each provider has its
 own model list.
+
+> **OpenCode caveat.** `opencode`'s free models are currently rejected by the
+> provider with **HTTP 400** for non-OpenCode clients, so this provider typically
+> falls through; it is retained only as a **last-resort** entry after
+> `openrouter`.
 
 
 ---

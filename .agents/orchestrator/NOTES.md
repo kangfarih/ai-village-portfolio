@@ -2572,4 +2572,128 @@ one-shot retry for the models that do reject it.
 - Follow-up: `GROQ_API_KEY_2` was removed from `llm_json.sh` and the 5 workflow
   envs/guards at the user's request; groq now uses a single key.
 
+---
+
+## Re-added OpenRouter + OpenCode providers
+
+**What changed (exactly 8 files).** The multi-provider fallback chain gained two
+providers — `openrouter` and `opencode` — after `ollama`. Public provider order
+is now `groq -> gemini -> cline -> ollama -> openrouter -> opencode`.
+
+- `.github/scripts/llm_json.sh` — appended two `PROVIDER_SPECS` rows:
+  - `openrouter|OPENROUTER_ENDPOINT|https://openrouter.ai/api/v1/chat/completions|OPENROUTER_API_KEY OPENROUTER_API_KEY_2 OPENROUTER_API_KEY_3 OPENROUTER_API_KEY_4 OPENROUTER_API_KEY_5|OPENROUTER_MODELS|nex-agi/nex-n2.5-mini:free|false`
+  - `opencode|OPENCODE_ENDPOINT|https://opencode.ai/zen/v1/chat/completions|OPENCODE_API_KEY|OPENCODE_MODELS|mimo-v2.5-free ling-3.0-flash-fin-free nemotron-3.5-lightning-free|false`
+  - default `ORDER_RAW` now `groq gemini cline ollama openrouter opencode`; the
+    "no API key configured" message lists all six providers; header comment
+    chain line, Env list, and `LLM_PROVIDER_ORDER` comment updated.
+  - `supports_effort=false` for both new providers (only groq sends
+    `reasoning_effort`). No change to `request_with_fallback`, `post`,
+    `is_key_cap`, `is_transport`, `is_key_failure`, backoff, correction, or
+    schema handling.
+- `.github/workflows/agent-triage.yml`, `agent-orchestrate.yml`,
+  `agent-techlead.yml`, `agent-programmer.yml`, `agent-review.yml` — each env
+  block gained the same six lines after `OLLAMA_API_KEY`:
+  `OPENROUTER_API_KEY` … `OPENROUTER_API_KEY_5` and `OPENCODE_API_KEY`. The four
+  role pre-flight guards (orchestrate/techlead/programmer/review; triage has
+  none) now also test `OPENROUTER_API_KEY`/`OPENCODE_API_KEY` and name all six
+  keys in their comment + `::error::` message. Triggers, permissions, steps,
+  concurrency and every other line are unchanged.
+- `.agents/orchestrator/STATE-MACHINE.md` — §1 provider table gained rows 5
+  (`openrouter`) and 6 (`opencode`), the default-order text and the endpoint/
+  model override lists now include both, `supports_effort=true` for groq only,
+  and the OpenCode caveat note.
+- `.agents/orchestrator/NOTES.md` (this section).
+
+**Rationale.**
+
+- **OpenRouter 5-key rotation + free-tier daily cap.** OpenRouter is re-added
+  with all five bearer tokens (`OPENROUTER_API_KEY`, `_2` … `_5`), tried in
+  order. Unset keys are skipped automatically, so wiring all five is harmless
+  when only some secrets exist. A free-tier daily cap is returned as HTTP 429
+  with `error.metadata.limit_source == "openrouter_free_tier_daily"`;
+  `is_key_cap` detects it and rotates to the next key **immediately** instead of
+  burning the transport backoff budget on a key that cannot succeed again that
+  day. This restores the pre-multi-provider rotation behavior and gives the
+  chain a second set of independent credentials after the primary four
+  providers are exhausted.
+- **OpenCode harness-gate caveat.** `opencode`'s free models are currently
+  rejected by the provider with **HTTP 400** for non-OpenCode clients, so this
+  provider typically fails through (400 → next model → next provider). It is
+  deliberately kept as the **last-resort** entry, after `openrouter`, because a
+  future ungating (or a working client identity) would make it usable without a
+  further code change.
+
+**Verification (actual output).**
+
+- `bash -n .github/scripts/llm_json.sh` → `OK`; `ls -l` shows mode `0755`
+  (`-rwxr-xr-x`).
+- `ruby -ryaml -e "YAML.load_file(...)"` for all 5 workflows → `YAML OK` each.
+- Extracted all **25** `run:` blocks (Ruby YAML walk) and `bash -n` each →
+  `run-blocks total=25 fail=0`.
+- `grep -c 'OPENROUTER_API_KEY\|OPENCODE_API_KEY'` per workflow:
+  `agent-triage 6` (the six env lines only) and `agent-orchestrate 9`,
+  `agent-techlead 9`, `agent-programmer 9`, `agent-review 9` (six env lines +
+  one condition line + one comment line + one `::error::` line, each of the
+  latter carrying both new keys).
+- **Mock-curl harness (50/50 assertions pass)**, a PATH `curl` shim consuming a
+  per-call response queue and recording argv/url/key/body, driven against real
+  `jq` and `--schema`. Scenarios:
+  1. **(a)** static `ORDER_RAW` default equals
+     `groq gemini cline ollama openrouter opencode`; behaviorally, with
+     ollama+openrouter+opencode keys and ollama 401, openrouter is contacted
+     next, and when openrouter also 401s, opencode is contacted after it.
+  2. **(b)** openrouter is reached after ollama fails; with five keys it tries
+     `OPENROUTER_API_KEY` … `_5` in order on 401 and succeeds on the fifth key
+     (6 calls: 1 ollama + 5 openrouter).
+  3. **(c)** openrouter HTTP 429 with
+     `.error.metadata.limit_source == "openrouter_free_tier_daily"` rotates the
+     key immediately (exactly 2 calls, key1 → key2, no transport retry; stderr
+     contains `free-tier daily cap`).
+  4. **(d)** opencode HTTP 400 on model1 falls to model2 and model3, and all-400
+     falls through to the end and fails loudly (`rc=1`,
+     `all providers failed … last HTTP 400`, provider error surfaced).
+  5. **(e)** `LLM_PROVIDER_ORDER=openrouter` exercises only openrouter
+     (exactly 1 call, even with all six providers' keys set).
+  6. **(f)** no key value appears in stdout/stderr for any of the six secrets;
+     the only argv occurrence of a key is the curl `Authorization: Bearer …`
+     header (unchanged).
+  7. **(g)** `reasoning_effort` is **not** sent to openrouter or opencode bodies,
+     while groq's body does carry it (supports_effort accuracy).
+- `git status --short` before commit showed exactly the 6 code/workflow files
+  (commit 1) then the 2 docs files (commit 2) — 8 intended files, clean after.
+
+**Commit + push record (dev only — NEVER main).**
+
+- Commit 1 `4077f69` —
+  `feat(llm): re-add openrouter + opencode providers to the fallback chain`;
+  files: `.github/scripts/llm_json.sh` + the 5 role workflows.
+  `git push origin dev` OK (`4e2113f..4077f69  dev -> dev`).
+- Commit 2 (this NOTES + STATE-MACHINE docs) —
+  `docs(agents): record openrouter + opencode re-add`; its own SHA/push range is
+  recorded in the task report post-push (not invented here).
+
+**Residual risks.**
+
+- **Mock-only verification.** The new providers are proven by the mock harness
+  only; no live OpenRouter/OpenCode request was made. The OpenRouter free model
+  `nex-agi/nex-n2.5-mini:free` and OpenCode model ids come from the task spec
+  and may drift (`*_MODELS` / `*_ENDPOINT` remain overridable).
+- **OpenCode is effectively dead weight today.** It is expected to 400 through
+  for non-OpenCode clients; the chain pays its model-list latency only after
+  every other provider has already failed, so the cost is bounded to
+  end-of-chain runs.
+- **OpenRouter daily-cap detection is body-shape specific.** `is_key_cap`
+  matches only `openrouter_free_tier_daily`; any other 429 stays a transport
+  retry (unchanged semantics). A cap expressed differently would burn backoff
+  on the capped key before advancing.
+- **Secret provisioning is a prerequisite.** If the repository has no
+  `OPENROUTER_API_KEY[_2.._5]`/`OPENCODE_API_KEY` secrets the new providers are
+  simply skipped with a log line, exactly as before; behavior for the original
+  four is unchanged.
+- **Key values in argv.** As before, the key is passed to `curl` via
+  `Authorization: Bearer`; it is never echoed to stdout/stderr, but it is
+  visible in the process argument list on the runner (pre-existing property of
+  the shared client, not introduced here).
+
+
 
