@@ -106,7 +106,7 @@ jobs:
         if: steps.classify.outputs.classification == 'non-technical'
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           set -euo pipefail
           gh workflow run agent-techlead.yml --repo "${{ github.repository }}" --ref dev -f issue_number="${ISSUE_NUMBER}" -f mode="research"
@@ -115,7 +115,7 @@ jobs:
         if: steps.classify.outputs.classification == 'technical'
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           set -euo pipefail
           gh workflow run agent-techlead.yml --repo "${{ github.repository }}" --ref dev -f issue_number="${ISSUE_NUMBER}" -f mode="coding"
