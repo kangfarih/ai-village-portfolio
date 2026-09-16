@@ -24,9 +24,7 @@ jobs:
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          HF_API_KEY: ${{ secrets.HF_API_KEY }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PROVIDER: ${{ matrix.provider }}
         run: |
@@ -49,17 +47,9 @@ jobs:
               ENDPOINT="${GROQ_ENDPOINT:-https://api.groq.com/openai/v1/chat/completions}"
               MODELS="${GROQ_MODELS:-openai/gpt-oss-20b}"
               ;;
-            huggingface)
-              ENDPOINT="${HF_ENDPOINT:-https://api-inference.huggingface.co/models/openbmb/MiniCPM5-2B}"
-              MODELS="${HF_MODELS:-openbmb/MiniCPM5-2B}"
-              ;;
             nvidia)
               ENDPOINT="${NVIDIA_ENDPOINT:-https://integrate.api.nvidia.com/v1/chat/completions}"
               MODELS="${NVIDIA_MODELS:-nvidia/nemotron-3.5-lightning-30b-a3b}"
-              ;;
-            ollama)
-              ENDPOINT="${OLLAMA_ENDPOINT:-https://ollama.com/v1/chat/completions}"
-              MODELS="${OLLAMA_MODELS:-gpt-oss:20b}"
               ;;
           esac
 
