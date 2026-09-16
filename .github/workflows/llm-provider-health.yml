@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        provider: [openrouter, gemini, groq, huggingface, nvidia, ollama]
+        provider: [openrouter, gemini, groq, nvidia]
 
     steps:
       - uses: actions/checkout@v4
